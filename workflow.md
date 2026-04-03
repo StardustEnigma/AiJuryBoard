@@ -9,7 +9,9 @@
 | :--- | :--- | :--- |
 | **Orchestrator** | **Node.js (v24+)** | Manages API lifecycles and event loops. |
 | **State Engine** | **SpacetimeDB (v2.0)** | Real-time relational database for agent synchronization. |
-| **Intelligence** | **Gemini 3.1 & Claude 4.5** | Reasoning, persona-driven debate, and final analysis. |
+| **Intelligence** | **Claude 4.5** (Prosecution, Defense, Devil's Advocate) | Persona-driven adversarial debate with distinct biases. |
+| **Synthesis** | **Gemini 3.1 Pro** | Neutral analysis & final verdict synthesis. |
+| **Reason Check** | **Llama 3.3** (The Skeptic) | Real-time logical fallacy detection. |
 | **Grounding** | **Tavily AI** | Real-time 2026 web search for "Ground Truth" evidence. |
 | **Governance** | **ArmorIQ** | Intent-based firewall to enforce agent roles and safety. |
 | **Sensory** | **ElevenLabs (Turbo 2.5)** | Low-latency, emotive TTS for distinct agent voices. |
@@ -25,10 +27,11 @@
 4. Data is pushed to the `Evidence` table in **SpacetimeDB**.
 
 ### 2. The Agentic Relay (The Debate Loop)
-The debate moves through a state machine managed by **SpacetimeDB Reducers**:
+The debate moves through a turn-based state machine managed by **SpacetimeDB Reducers**:
 
-* **Prosecution (Claude 4.5):** Reads evidence -> Generates aggressive argument.
-* **Defense (Claude 4.5):** Reads Prosecutor's message via SpacetimeDB event -> Generates empathetic rebuttal.
+* **Prosecution (Claude 4.5):** Reads evidence -> Generates aggressive argument. *Role: maximalist, seeks to win.*
+* **Defense (Claude 4.5):** Reads Prosecutor's message -> Generates empathetic rebuttal. *Role: minimalist, seeks fairness.*
+* **Devil's Advocate (Claude 4.5):** Reads both arguments -> Injects critiques & edge cases. *Role: pragmatist, seeks reality.*
 * **The Firewall (ArmorIQ):** Every message is intercepted *before* broadcast. If an agent "breaks character" or hallucinates, ArmorIQ rejects the transaction.
 * **The Skeptic (Llama 3.3):** Monitors the `Message` table and injects "Logical Fallacy" alerts in real-time.
 
@@ -56,11 +59,12 @@ The debate moves through a state machine managed by **SpacetimeDB Reducers**:
 
 2. **Set environment variables:**
    Create a `.env` file and configure:
-   - `GEMINI_API_KEY`
-   - `CLAUDE_API_KEY`
-   - `TAVILY_KEY`
-   - `ARMOR_IQ_KEY`
-   - `ELEVENLABS_ID`
+   - `GEMINI_API_KEY` (synthesis)
+   - `CLAUDE_API_KEY` (prosecution, defense, devil's advocate)
+   - `TAVILY_KEY` (evidence search)
+   - `LLAMA_API_KEY` (fallacy detection)
+   - `ARMOR_IQ_KEY` (message validation)
+   - `ELEVENLABS_ID` (audio synthesis)
 
 3. **Install dependencies and start the orchestrator:**
    ```bash
@@ -73,6 +77,37 @@ The debate moves through a state machine managed by **SpacetimeDB Reducers**:
 
 ---
 
+## � Implementation Tracker
+
+| Component | Status | Location | Notes |
+|-----------|--------|----------|-------|
+| **Spacetime Schema** | ✅ Done | `spacetimedb/src/schema.ts` | Tables: JurySession, Evidence, Message, Alert, Verdict |
+| **Spacetime Reducers** | ✅ Done | `spacetimedb/src/index.ts` | All 7 reducers implemented |
+| **Frontend UI Harness** | ✅ Done | `ai-jury-frontend/src/App.tsx` | Session creation & start debate wired |
+| **Tavily Integration** | ⏳ Pending | `orchestrator.js` (TBD) | Search → Evidence table |
+| **Claude Prosecution** | ⏳ Pending | `orchestrator.js` (TBD) | On session start, generate opening argument |
+| **Claude Defense** | ⏳ Pending | `orchestrator.js` (TBD) | After prosecution posted, generate response |
+| **Devil's Advocate (Claude or Grok?)** | ⏳ Pending | `orchestrator.js` (TBD) | After defense posted, inject critique. **DECISION:** Use Claude 4.5 with contrarian prompt, or switch to Grok for stronger edge-case discovery? |
+| **ArmorIQ Validation** | ⏳ Pending | `spacetimedb/src/index.ts` (postArgument) | Intercept & validate all debate messages |
+| **Llama Fallacy Detection** | ⏳ Pending | `orchestrator.js` (TBD) | Watch Message table → record Alert |
+| **ElevenLabs TTS** | ⏳ Pending | `orchestrator.js` (TBD) | Message text → audio stream |
+| **Frontend Audio Player** | ⏳ Pending | `ai-jury-frontend/src/App.tsx` | Subscribe to audio chunks, render waveform |
+| **Gemini Synthesis** | ⏳ Pending | `orchestrator.js` (TBD) | After max rounds, read Message table → Verdict |
+| **MongoDB Public Record** | ⏳ Pending | `orchestrator.js` (TBD) | Store final verdict for audit log |
+
+---
+
 ## 🛡️ Governance & Ethics
 
+**Tri-Agent Debate Model:**
+- **Prosecution (Pro):** Maximalist perspective—supports the thesis aggressively.
+- **Defense (Con):** Minimalist perspective—opposes the thesis empathetically.
+- **Devil's Advocate (Reality):** Pragmatist perspective—questions both sides, surfaces edge cases and nuance.
+
 ArmorIQ ensures that, even when agents are intentionally biased for adversarial debate, outputs remain role-consistent and fact-grounded. This reduces hallucination loops common in unconstrained LLM pipelines and supports a transparent, auditable truth-vs-manipulation process.
+
+**Devil's Advocate Key Traits:**
+- Enters on round 2+ (after prosecution and defense have both spoken)
+- Does NOT advocate for either side—instead critiques logical gaps
+- Asks "what if?" and "what would break this argument?"
+- Helps ground the debate in empirical reality, not ideology
