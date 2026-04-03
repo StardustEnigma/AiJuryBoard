@@ -1,29 +1,23 @@
-export type MessageRecord = {
-    sender: string;
-    content: string;
-    timestamp: number;
-};
+export type JuryRole = 'prosecution' | 'defense';
 
-export type RoomStateRecord = {
-    status: 'IDLE' | 'DEBATING' | 'ANALYZING';
-    currentTurn: string;
-};
+export type SessionStatus = 'idle' | 'debating' | 'analyzing' | 'closed';
 
-type MessageDb = {
-    insert: (row: MessageRecord) => void;
-};
+export const DEFAULT_MAX_ROUNDS = 6n;
 
-type JuryDbContext = {
-    db: {
-        message: MessageDb;
-    };
-};
+export const OPENING_ROLE: JuryRole = 'prosecution';
 
-export function postArgument(ctx: JuryDbContext, sender: string, content: string): void {
-    const timestamp = Date.now();
-    ctx.db.message.insert({ sender, content, timestamp });
+export function normalizeText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
 
-    if (sender === 'Prosecutor') {
-        // Turn-switch logic can be added when the room state table is wired in.
-    }
+export function nextRole(currentRole: JuryRole): JuryRole {
+  return currentRole === 'prosecution' ? 'defense' : 'prosecution';
+}
+
+export function isValidRole(value: string): value is JuryRole {
+  return value === 'prosecution' || value === 'defense';
+}
+
+export function isTerminalStatus(value: string): value is Exclude<SessionStatus, 'idle' | 'debating'> {
+  return value === 'analyzing' || value === 'closed';
 }
