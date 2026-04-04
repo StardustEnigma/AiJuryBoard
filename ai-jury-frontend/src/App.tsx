@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { SpacetimeDBProvider, useSpacetimeDB, useTable } from 'spacetimedb/react';
 import { DbConnection, tables } from './module_bindings';
 import type { Alert, Evidence, JurySession, Message, Verdict } from './module_bindings/types';
@@ -28,6 +28,20 @@ const SYNTHESIS_SECTION_TOKEN_REGEX =
 
 type NoticeTone = 'info' | 'success' | 'error';
 type Notice = { tone: NoticeTone; message: string } | null;
+
+type AudioRenderResponse = {
+  audioUrl?: string;
+  voiceId: string;
+  modelId: string;
+  cached: boolean;
+  fallback?: 'browser_tts';
+  fallbackReason?: string;
+};
+
+function isElevenLabsBlockedError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('detected_unusual_activity') || normalized.includes('free tier usage disabled');
+}
 
 function toBigInt(value: unknown): bigint {
   try {
@@ -272,6 +286,18 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
   const [topic, setTopic] = useState('');
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice>(null);
+  const [ttsLoadingMessageId, setTtsLoadingMessageId] = useState<string | null>(null);
+  const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+    };
+  }, []);
 
   const sortedSessions = useMemo(() => {
     const copy = [...sessions];
@@ -360,6 +386,133 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
   }, [activeSessionId, verdicts]);
 
   const streamLoading = sessionsLoading || messagesLoading || evidenceLoading || alertsLoading || verdictsLoading;
+
+  const stopAudioPlayback = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+
+    setPlayingMessageId(null);
+  };
+
+  const markMessageSpoken = async (messageId: string) => {
+    try {
+      await fetch(`${ORCHESTRATOR_URL}/audio/spoken`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageId }),
+      });
+    } catch (error) {
+      console.warn('Unable to mark message as SPOKEN:', error);
+    }
+  };
+
+  const playWithBrowserTts = async (messageId: string, text: string, reason?: string) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      throw new Error('Browser speech synthesis is not supported in this environment.');
+    }
+
+    stopAudioPlayback();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+    utterance.lang = 'en-US';
+
+    utterance.onend = () => {
+      setPlayingMessageId(null);
+      void markMessageSpoken(messageId);
+    };
+
+    utterance.onerror = () => {
+      setPlayingMessageId(null);
+      setNotice({ tone: 'error', message: 'Browser voice playback failed. Please try again.' });
+    };
+
+    window.speechSynthesis.speak(utterance);
+    setPlayingMessageId(messageId);
+
+    if (reason === 'ELEVENLABS_ACCOUNT_RESTRICTED') {
+      setNotice({
+        tone: 'info',
+        message: 'ElevenLabs access is currently restricted; switched to browser voice fallback.',
+      });
+      return;
+    }
+
+    setNotice({ tone: 'info', message: 'Using browser voice fallback.' });
+  };
+
+  const playMessageAudio = async (message: Message) => {
+    const messageId = toId(message.id);
+    const text = cleanMarkdownText(message.content).replace(/\s+/g, ' ').trim();
+
+    if (!text) {
+      setNotice({ tone: 'info', message: 'Message has no text to synthesize.' });
+      return;
+    }
+
+    setTtsLoadingMessageId(messageId);
+
+    try {
+      const response = await fetch(`${ORCHESTRATOR_URL}/audio/render`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageId, text }),
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        const errorMessage = payload.error || `TTS request failed (${response.status})`;
+        if (isElevenLabsBlockedError(errorMessage)) {
+          await playWithBrowserTts(messageId, text, 'ELEVENLABS_ACCOUNT_RESTRICTED');
+          return;
+        }
+
+        throw new Error(errorMessage);
+      }
+
+      const payload = (await response.json()) as AudioRenderResponse;
+      if (payload.fallback === 'browser_tts' || !payload.audioUrl) {
+        await playWithBrowserTts(messageId, text, payload.fallbackReason);
+        return;
+      }
+
+      const url = payload.audioUrl.startsWith('http') ? payload.audioUrl : `${ORCHESTRATOR_URL}${payload.audioUrl}`;
+
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+      }
+
+      const audio = new Audio(url);
+      audioRef.current = audio;
+
+      audio.onended = () => {
+        setPlayingMessageId(null);
+        void markMessageSpoken(messageId);
+      };
+      audio.onerror = () => {
+        setPlayingMessageId(null);
+        setNotice({ tone: 'error', message: 'Audio playback failed. Please try again.' });
+      };
+
+      await audio.play();
+      setPlayingMessageId(messageId);
+      setNotice({ tone: 'success', message: `Voice ready (${payload.voiceId}).` });
+    } catch (error) {
+      setNotice({ tone: 'error', message: `Audio synthesis failed: ${String(error)}` });
+    } finally {
+      setTtsLoadingMessageId(null);
+    }
+  };
 
   const handleCreate = () => {
     const normalizedTopic = topic.trim();
@@ -555,6 +708,13 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
                 <div className="list-stack">
                   {sessionMessages.map((message) => (
                     <article key={message.id.toString()} className="message-card">
+                      {(() => {
+                        const messageId = toId(message.id);
+                        const isLoading = ttsLoadingMessageId === messageId;
+                        const isPlaying = playingMessageId === messageId;
+
+                        return (
+                          <>
                       <div className="chip-row">
                         <span className={`chip ${roleClass(message.role)}`}>{formatLabel(message.role)}</span>
                         <span className="chip chip-neutral">Round {toBigInt(message.roundNumber).toString()}</span>
@@ -565,6 +725,25 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
                           <li key={`${message.id.toString()}-${index}`}>{point}</li>
                         ))}
                       </ul>
+                      <div className="message-actions">
+                        <button
+                          className="btn btn-ghost"
+                          onClick={() => {
+                            void playMessageAudio(message);
+                          }}
+                          disabled={isLoading}
+                        >
+                          {isLoading ? 'Preparing Voice...' : isPlaying ? 'Replay Voice' : 'Play Voice'}
+                        </button>
+                        {isPlaying && (
+                          <button className="btn btn-ghost" onClick={stopAudioPlayback}>
+                            Stop
+                          </button>
+                        )}
+                      </div>
+                          </>
+                        );
+                      })()}
                     </article>
                   ))}
                 </div>

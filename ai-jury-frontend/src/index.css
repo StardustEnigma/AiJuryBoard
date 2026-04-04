@@ -489,6 +489,12 @@ body {
   margin-bottom: 0;
 }
 
+.message-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
 .entry-meta {
   margin-top: 8px;
   display: flex;

@@ -403,6 +403,7 @@ export async function initSpacetimeDB(): Promise<any> {
       startDebate: async (args: any) => connection.callReducer('start_debate', args),
       ingestEvidence: async (args: any) => connection.callReducer('ingest_evidence', args),
       postArgument: async (args: any) => connection.callReducer('post_argument', args),
+      advanceMessageStatus: async (args: any) => connection.callReducer('advance_message_status', args),
       recordFallacyAlert: async (args: any) => connection.callReducer('record_fallacy_alert', args),
       finalizeVerdict: async (args: any) => connection.callReducer('finalize_verdict', args),
       markAnalyzing: async (args: any) => connection.callReducer('mark_analyzing', args),
