@@ -40,9 +40,40 @@ const AUDIO_ALLOW_BROWSER_FALLBACK = (process.env.AUDIO_ALLOW_BROWSER_FALLBACK |
 type AudioRenderRequest = {
   messageId: string | number;
   text: string;
+  role?: string;
   voiceId?: string;
   modelId?: string;
 };
+
+function normalizeRole(value: unknown): string | undefined {
+  const normalized = String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\u2019']/g, '')
+    .replace(/[\s-]+/g, '_');
+
+  if (normalized === 'PROSECUTION' || normalized === 'DEFENSE' || normalized === 'DEVILS_ADVOCATE') {
+    return normalized;
+  }
+
+  return undefined;
+}
+
+function resolveRoleVoiceId(role?: string): string | undefined {
+  if (role === 'PROSECUTION') {
+    return (process.env.ELEVENLABS_VOICE_ID_PROSECUTION || '').trim() || undefined;
+  }
+
+  if (role === 'DEFENSE') {
+    return (process.env.ELEVENLABS_VOICE_ID_DEFENSE || '').trim() || undefined;
+  }
+
+  if (role === 'DEVILS_ADVOCATE') {
+    return (process.env.ELEVENLABS_VOICE_ID_DEVILS_ADVOCATE || '').trim() || undefined;
+  }
+
+  return undefined;
+}
 
 function isElevenLabsRestrictionError(message: string): boolean {
   const normalized = message.toLowerCase();
@@ -156,7 +187,9 @@ async function handleAudioRender(req: http.IncomingMessage, res: http.ServerResp
     }
 
     const defaults = resolveElevenLabsDefaults();
-    const voiceId = (payload.voiceId || defaults.voiceId).trim();
+    const role = normalizeRole(payload.role);
+    const roleVoiceId = resolveRoleVoiceId(role);
+    const voiceId = (payload.voiceId || roleVoiceId || defaults.voiceId).trim();
     const modelId = (payload.modelId || defaults.modelId).trim();
     const audioKey = `${messageId.toString()}-${voiceId}-${modelId}-${hashText(text)}`;
 

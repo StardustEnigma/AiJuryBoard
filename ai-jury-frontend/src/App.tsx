@@ -40,7 +40,98 @@ type AudioRenderResponse = {
 
 function isElevenLabsBlockedError(message: string): boolean {
   const normalized = message.toLowerCase();
-  return normalized.includes('detected_unusual_activity') || normalized.includes('free tier usage disabled');
+  return (
+    normalized.includes('detected_unusual_activity') ||
+    normalized.includes('free tier usage disabled') ||
+    normalized.includes('elevenlabs_account_restricted') ||
+    (normalized.includes('401') && normalized.includes('unauthorized'))
+  );
+}
+
+function normalizeSpeechErrorCode(error: unknown): string {
+  if (typeof error === 'string' && error.trim()) {
+    return error.trim().toLowerCase();
+  }
+
+  return 'unknown';
+}
+
+function describeSpeechError(code: string): string {
+  if (code === 'not-allowed') {
+    return 'Browser blocked voice playback. Click Play Voice again to allow speech.';
+  }
+
+  if (code === 'voice-unavailable' || code === 'language-unavailable') {
+    return 'Browser voice is unavailable on this device. Install/enable a system voice and try again.';
+  }
+
+  if (code === 'audio-hardware' || code === 'synthesis-unavailable') {
+    return 'Browser speech engine is unavailable right now. Check system audio settings and retry.';
+  }
+
+  if (code === 'text-too-long') {
+    return 'Browser voice rejected this text length. Try a shorter message.';
+  }
+
+  return `Browser voice playback failed (${code}). Please try again.`;
+}
+
+async function waitForSpeechVoices(synth: SpeechSynthesis, timeoutMs = 1200): Promise<SpeechSynthesisVoice[]> {
+  const existing = synth.getVoices();
+  if (existing.length > 0) {
+    return existing;
+  }
+
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      synth.removeEventListener('voiceschanged', onVoicesChanged);
+      resolve();
+    };
+
+    const onVoicesChanged = () => finish();
+    synth.addEventListener('voiceschanged', onVoicesChanged);
+    setTimeout(finish, timeoutMs);
+  });
+
+  return synth.getVoices();
+}
+
+function normalizeAgentRole(value: unknown): string {
+  return String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\u2019']/g, '')
+    .replace(/[\s-]+/g, '_');
+}
+
+function browserVoiceProfileForRole(role: string): { preferredIndex: number; rate: number; pitch: number } {
+  if (role === 'PROSECUTION') {
+    return { preferredIndex: 0, rate: 1, pitch: 0.96 };
+  }
+
+  if (role === 'DEFENSE') {
+    return { preferredIndex: 1, rate: 0.98, pitch: 1.04 };
+  }
+
+  if (role === 'DEVILS_ADVOCATE') {
+    return { preferredIndex: 2, rate: 1.03, pitch: 0.9 };
+  }
+
+  return { preferredIndex: 0, rate: 1, pitch: 1 };
+}
+
+function selectBrowserVoiceForRole(voices: SpeechSynthesisVoice[], role: string): SpeechSynthesisVoice | undefined {
+  const englishVoices = voices.filter((voice) => voice.lang?.toLowerCase().startsWith('en'));
+  const pool = englishVoices.length > 0 ? englishVoices : voices;
+  if (pool.length === 0) {
+    return undefined;
+  }
+
+  const { preferredIndex } = browserVoiceProfileForRole(role);
+  return pool[Math.min(preferredIndex, pool.length - 1)];
 }
 
 function toBigInt(value: unknown): bigint {
@@ -289,6 +380,8 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
   const [ttsLoadingMessageId, setTtsLoadingMessageId] = useState<string | null>(null);
   const [playingMessageId, setPlayingMessageId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const browserTtsStopRequestedRef = useRef(false);
+  const preferBrowserTtsRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -395,6 +488,7 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
     }
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      browserTtsStopRequestedRef.current = true;
       window.speechSynthesis.cancel();
     }
 
@@ -413,30 +507,71 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
     }
   };
 
-  const playWithBrowserTts = async (messageId: string, text: string, reason?: string) => {
+  const playWithBrowserTts = async (messageId: string, text: string, role: string, reason?: string) => {
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
       throw new Error('Browser speech synthesis is not supported in this environment.');
     }
 
     stopAudioPlayback();
+    browserTtsStopRequestedRef.current = false;
+
+    const synth = window.speechSynthesis;
+    const voices = await waitForSpeechVoices(synth);
+    const roleCode = normalizeAgentRole(role);
+    const voiceProfile = browserVoiceProfileForRole(roleCode);
 
     const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1;
-    utterance.pitch = 1;
+    utterance.rate = voiceProfile.rate;
+    utterance.pitch = voiceProfile.pitch;
     utterance.volume = 1;
-    utterance.lang = 'en-US';
+
+    const preferredVoice =
+      selectBrowserVoiceForRole(voices, roleCode) || voices.find((voice) => voice.default) || voices[0];
+
+    if (preferredVoice) {
+      utterance.voice = preferredVoice;
+      utterance.lang = preferredVoice.lang || 'en-US';
+    } else {
+      utterance.lang = 'en-US';
+    }
 
     utterance.onend = () => {
+      const wasManualStop = browserTtsStopRequestedRef.current;
+      browserTtsStopRequestedRef.current = false;
       setPlayingMessageId(null);
-      void markMessageSpoken(messageId);
+      if (!wasManualStop) {
+        void markMessageSpoken(messageId);
+      }
     };
 
-    utterance.onerror = () => {
+    utterance.onerror = (event) => {
+      const errorCode = normalizeSpeechErrorCode(event.error);
+      const wasManualStop = browserTtsStopRequestedRef.current;
+      browserTtsStopRequestedRef.current = false;
+
+      if (wasManualStop && (errorCode === 'canceled' || errorCode === 'interrupted')) {
+        return;
+      }
+
       setPlayingMessageId(null);
-      setNotice({ tone: 'error', message: 'Browser voice playback failed. Please try again.' });
+      setNotice({ tone: 'error', message: describeSpeechError(errorCode) });
+      console.warn('Browser speech synthesis error:', {
+        messageId,
+        role: roleCode,
+        reason,
+        errorCode,
+        textLength: text.length,
+      });
     };
 
-    window.speechSynthesis.speak(utterance);
+    try {
+      synth.speak(utterance);
+      synth.resume();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Browser speech synthesis failed to start: ${message}`);
+    }
+
     setPlayingMessageId(messageId);
 
     if (reason === 'ELEVENLABS_ACCOUNT_RESTRICTED') {
@@ -444,6 +579,11 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
         tone: 'info',
         message: 'ElevenLabs access is currently restricted; switched to browser voice fallback.',
       });
+      return;
+    }
+
+    if (reason === 'ELEVENLABS_NOT_CONFIGURED') {
+      setNotice({ tone: 'info', message: 'ElevenLabs API key is not configured; using browser voice fallback.' });
       return;
     }
 
@@ -459,20 +599,26 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
       return;
     }
 
+    if (preferBrowserTtsRef.current) {
+      await playWithBrowserTts(messageId, text, message.role, 'BROWSER_TTS_ONLY');
+      return;
+    }
+
     setTtsLoadingMessageId(messageId);
 
     try {
       const response = await fetch(`${ORCHESTRATOR_URL}/audio/render`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messageId, text }),
+        body: JSON.stringify({ messageId, text, role: message.role }),
       });
 
       if (!response.ok) {
         const payload = (await response.json().catch(() => ({}))) as { error?: string };
         const errorMessage = payload.error || `TTS request failed (${response.status})`;
         if (isElevenLabsBlockedError(errorMessage)) {
-          await playWithBrowserTts(messageId, text, 'ELEVENLABS_ACCOUNT_RESTRICTED');
+          preferBrowserTtsRef.current = true;
+          await playWithBrowserTts(messageId, text, message.role, 'ELEVENLABS_ACCOUNT_RESTRICTED');
           return;
         }
 
@@ -481,9 +627,12 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
 
       const payload = (await response.json()) as AudioRenderResponse;
       if (payload.fallback === 'browser_tts' || !payload.audioUrl) {
-        await playWithBrowserTts(messageId, text, payload.fallbackReason);
+        preferBrowserTtsRef.current = true;
+        await playWithBrowserTts(messageId, text, message.role, payload.fallbackReason);
         return;
       }
+
+      preferBrowserTtsRef.current = false;
 
       const url = payload.audioUrl.startsWith('http') ? payload.audioUrl : `${ORCHESTRATOR_URL}${payload.audioUrl}`;
 

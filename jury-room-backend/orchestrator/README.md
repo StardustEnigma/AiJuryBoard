@@ -10,6 +10,9 @@ Set these in your root `.env` (or orchestrator runtime environment):
 
 - `ELEVENLABS_API_KEY` (required)
 - `ELEVENLABS_VOICE_ID` (optional, default: `EXAVITQu4vr4xnSDxMaL`)
+- `ELEVENLABS_VOICE_ID_PROSECUTION` (optional per-agent override)
+- `ELEVENLABS_VOICE_ID_DEFENSE` (optional per-agent override)
+- `ELEVENLABS_VOICE_ID_DEVILS_ADVOCATE` (optional per-agent override)
 - `ELEVENLABS_MODEL_ID` (optional, default: `eleven_multilingual_v2`)
 - `ELEVENLABS_OUTPUT_FORMAT` (optional, default: `mp3_44100_128`)
 - `ELEVENLABS_BASE_URL` (optional, default: `https://api.elevenlabs.io/v1`)
@@ -27,10 +30,17 @@ Request body:
 {
   "messageId": "31",
   "text": "Debate argument text to synthesize",
+  "role": "PROSECUTION",
   "voiceId": "optional_voice_id",
   "modelId": "optional_model_id"
 }
 ```
+
+Notes:
+
+- If `voiceId` is provided, it takes highest priority.
+- If `voiceId` is omitted and `role` is provided, the orchestrator checks role-specific env vars first.
+- If no role-specific voice is configured, it falls back to `ELEVENLABS_VOICE_ID`.
 
 Response:
 
