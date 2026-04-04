@@ -6,6 +6,8 @@
 
 import dotenv from 'dotenv';
 import http from 'http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { initSpacetimeDB, registerSession } from './spacetime.js';
 import { runDiscoveryWorker } from './workers/discovery.js';
 import { runProsecutionWorker } from './workers/prosecution.js';
@@ -15,7 +17,13 @@ import { runFallacyWorker } from './workers/fallacy.js';
 import { runSynthesisWorker } from './workers/synthesis.js';
 import { log, logSuccess, logError } from './utils/logger.js';
 
-dotenv.config();
+const envLoadResult = dotenv.config();
+if (envLoadResult.error) {
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const fallbackEnvPath = path.resolve(__dirname, '../../../.env');
+  dotenv.config({ path: fallbackEnvPath });
+}
 
 /**
  * Create HTTP server for frontend notifications

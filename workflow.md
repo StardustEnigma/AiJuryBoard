@@ -1,191 +1,254 @@
-# 🏛️ Jury Room: Technical Architecture & Workflow (2026)
+# AI Jury Room: Enhanced Workflow and Implementation Plan
 
-**Project Goal:** Patching Reality by using multi-agent AI to simulate high-stakes, logically grounded debates on controversial topics.
+Date: 2026-04-04
 
----
+## 1) Mission
 
-## 🛠️ The 2026 Tech Stack
-| Layer | Technology | Function |
-| :--- | :--- | :--- |
-| **Orchestrator** | **Node.js (v24+)** | Manages API lifecycles and event loops. |
-| **State Engine** | **SpacetimeDB (v2.0)** | Real-time relational database for agent synchronization. |
-| **Intelligence** | **Claude 4.5** (Prosecution, Defense, Devil's Advocate) | Persona-driven adversarial debate with distinct biases. |
-| **Synthesis** | **Gemini 3.1 Pro** | Neutral analysis & final verdict synthesis. |
-| **Reason Check** | **Llama 3.3** (The Skeptic) | Real-time logical fallacy detection. |
-| **Grounding** | **Tavily AI** | Real-time 2026 web search for "Ground Truth" evidence. |
-| **Governance** | **ArmorIQ** | Intent-based firewall to enforce agent roles and safety. |
-| **Sensory** | **ElevenLabs (Turbo 2.5)** | Low-latency, emotive TTS for distinct agent voices. |
+Build a research-grade, multi-agent debate platform that is:
 
----
+- Grounded in verifiable evidence
+- Robust against bias and prompt drift
+- Auditable from topic input to final verdict
+- Reliable under retries, failures, and partial outages
 
-## 🏗️ System Architecture (Separation of Concerns)
+## 2) Current System Snapshot (As-Is)
 
-### SpacetimeDB: Deterministic State Engine
-**Purpose:** Session state, message audit log, evidence snapshots, and alerts only.
+### 2.1 Core Runtime
 
-**Never do:** Network calls, AI inference, file I/O, or non-deterministic operations.
+- Frontend: React + Vite + SpacetimeDB bindings
+- Orchestrator: Node.js + TypeScript worker loop
+- State engine: SpacetimeDB (sessions, evidence, messages, alerts, verdicts)
+- External services:
+  - Tavily for evidence search
+  - Groq-hosted LLMs for argument generation, fallacy checks, and synthesis
+  - MongoDB for verdict records
 
-**Tables:**
-- `jury_session` — tracks phase transitions (DISCOVERY_PENDING → COMPLETED)
-- `evidence` — frozen snapshots of facts per session
-- `message` — debate turns with status lifecycle (DRAFT → BROADCASTABLE → SPOKEN)
-- `alert` — fallacy detections, logged *after* messages are stored
-- `verdict` — final synthesis output with evidence_snapshot_id for auditability
+### 2.2 Active Workers
 
----
+- Discovery worker
+- Prosecution worker
+- Defense worker
+- Devil's Advocate worker
+- Fallacy worker
+- Synthesis worker
 
-### Node.js Orchestrator: Nondeterministic Workers
-**Purpose:** Poll for phase changes, invoke external APIs, retry safely, enforce policy gates.
+### 2.3 Current Models and Roles
 
-**Worker Pattern:**
-1. Poll SpacetimeDB for a specific session phase (e.g., DISCOVERY_PENDING)
-2. Call external API (Tavily, Claude, Gemini, Llama, ElevenLabs) on frozen evidence snapshot
-3. ArmorIQ pre-gate validation (policy check before each action)
-4. Call SpacetimeDB reducer to atomically write result and advance phase
-5. On failure: retry with idempotency key (prevents duplicate messages/evidence)
+- `llama-3.3-70b-versatile`:
+  - Prosecution arguments
+  - Defense arguments
+  - Devil's Advocate critique
+  - Final synthesis
+- `llama-3.1-8b-instant`:
+  - Fallacy analysis
 
-**The Safe Debate Loop (per session):**
-1. **Evidence Snapshot** → Tavily search (ArmorIQ: is this a legitimate search?) → freeze with `ingestEvidence`
-2. **Prosecution** → Claude with frozen evidence (ArmorIQ: stays in role?) → `postArgument`
-3. **Defense** → Claude reads prosecution msg (ArmorIQ: stays in role?) → `postArgument`
-4. **Devil's Advocate** → Claude reads both (ArmorIQ: surfaces genuine edge cases?) → `postArgument`
-5. **Fallacy Detection** (parallel) → Llama scans messages → `recordFallacyAlert` (advisory, never rewrites)
-6. **Audio Streaming** (parallel) → ElevenLabs per message → updates message status to SPOKEN
-7. **Synthesis** → Gemini reads frozen facts + all messages (ArmorIQ: neutral analysis?) → `finalizeVerdict` → MongoDB
+### 2.4 What Is Already Improved
 
----
+- Debate text readability improved with stricter prompts and output caps
+- UI formatting improved (argument timeline shown as points)
+- Markdown artifact cleanup in UI rendering (`**...**` stripped)
+- Discovery upgraded from single-result evidence to curated multi-source snapshot
+- Basic bias indicators added to evidence curation (source diversity notes)
 
-## � Conflict Controls: Strict Phase Transitions
+## 3) Canonical End-to-End Workflow (Target)
 
-Each session has exactly one active phase at a time. Only the orchestrator can advance phases (via idempotent gate).
+1. Session is created with status `DISCOVERY_PENDING`.
+2. Discovery performs multi-query search and builds a curated evidence snapshot.
+3. Evidence is frozen and session advances to `DISCOVERY_DONE` with turn `PROSECUTION`.
+4. Prosecution posts argument and advances to `PROSECUTION_DONE`.
+5. Defense posts argument and advances to `DEFENSE_DONE`.
+6. Devil's Advocate posts critique and moves session to analyzing phase.
+7. Fallacy worker runs in parallel over posted messages and records alerts.
+8. Synthesis reads frozen evidence plus debate history and writes final verdict.
+9. Final verdict is persisted for audit/public record.
 
+## 4) State Machine Contract
+
+`DISCOVERY_PENDING` -> `DISCOVERY_DONE` -> `PROSECUTION_DONE` -> `DEFENSE_DONE` -> `DEVILS_ADVOCATE_DONE` -> `SYNTHESIS_PENDING` -> `COMPLETED`
+
+Failure branch: any phase may transition to `FAILED` through guarded failure handling.
+
+Rules:
+
+- Only one phase owner writes phase transitions.
+- Reducers must remain deterministic.
+- Idempotency keys are required for external-action writes.
+- Evidence snapshot is immutable after discovery completes.
+
+## 5) Research-Grade Gap Analysis (As-Is vs To-Be)
+
+### 5.1 Implemented
+
+- Deterministic reducer state model
+- Multi-worker orchestrator skeleton
+- Multi-agent role separation
+- Fallacy advisory path
+- MongoDB persistence for synthesis output
+
+### 5.2 Missing or Partial
+
+- Policy gate layer before every external action (search, generation, publish)
+- Strong evidence balancing policy (source class quotas, contradiction checks)
+- Audio/TTS pipeline and `SPOKEN` message lifecycle
+- Structured quality scoring for each debate turn
+- Session-level benchmark and evaluation harness
+- Operational dashboards and SLO metrics
+
+## 6) Enhancement Plan (Phased)
+
+## Phase A: Evidence Hardening (In Progress)
+
+Objective: reduce search and ranking bias before debate begins.
+
+Deliverables:
+
+- Multi-query evidence retrieval (primary + counter-view)
+- Result dedupe and source diversity selection
+- Curated snapshot with findings, source list, and diversity report
+- Audit log fields for selected source URLs and diversity flags
+
+Acceptance:
+
+- Snapshot contains >= 2 distinct domains for non-trivial topics when available
+- Discovery retries do not create duplicate evidence rows
+
+## Phase B: Policy Gate Integration
+
+Objective: introduce governance checks without breaking throughput.
+
+Deliverables:
+
+- Add policy module for pre-search, pre-argument, pre-synthesis, and pre-publish checks
+- Record policy violations in alerts/audit log
+- Non-blocking degrade path (safe fallback response if gate fails)
+
+Acceptance:
+
+- Every external call has a gate decision trace in logs
+- Rejected turns are observable and do not deadlock session progression
+
+## Phase C: Argument Quality Layer
+
+Objective: make debate quality measurable and consistent.
+
+Deliverables:
+
+- Add rubric scores per message (clarity, grounding, logical consistency)
+- Prompt-inject previous score feedback into next role turn
+- Add low-quality retry path with capped attempts
+
+Acceptance:
+
+- Each message has score metadata in audit stream
+- Average quality trend is non-degrading over rounds
+
+## Phase D: Synthesis Reliability and Publication
+
+Objective: produce neutral, traceable verdicts.
+
+Deliverables:
+
+- Enforce verdict template output contract
+- Add contradiction summary between roles
+- Publish structured verdict package (topic, evidence snapshot, arguments, alerts, verdict)
+
+Acceptance:
+
+- Verdict always includes all required sections
+- Publication payload links to immutable evidence snapshot id
+
+## Phase E: Audio and Delivery Layer
+
+Objective: complete message lifecycle to `SPOKEN` and support multimodal output.
+
+Deliverables:
+
+- Audio worker for TTS generation and delivery
+- Message status transitions: `DRAFT -> VALIDATED -> BROADCASTABLE -> SPOKEN`
+- Frontend playback controls and state indicators
+
+Acceptance:
+
+- Posted arguments can be rendered and played as audio
+- Status transitions are consistent and observable
+
+## Phase F: Evaluation and Operations
+
+Objective: move from demo-grade to production-grade reliability.
+
+Deliverables:
+
+- Golden test topics and expected phase traces
+- Metrics: phase latency, retry rate, failure rate, policy reject rate
+- Health dashboard + alerting thresholds
+
+Acceptance:
+
+- Repeatable end-to-end pass rate >= 95% on benchmark set
+- Mean time to detect failure < 1 minute
+
+## 7) Immediate Implementation Backlog (Next 10 Tasks)
+
+1. Add policy gate scaffolding module and typed gate decisions.
+2. Wire policy gate into discovery before Tavily call.
+3. Wire policy gate into prosecution/defense/devils prompts.
+4. Add synthesis pre-publish policy check.
+5. Add explicit failure reducer path for unrecoverable worker errors.
+6. Add message quality score calculator and audit persistence.
+7. Add contradiction extractor in synthesis step.
+8. Add publish payload serializer for final verdict records.
+9. Add audio worker stub and message status integration points.
+10. Add benchmark script for multi-session end-to-end regression tests.
+
+## 8) Validation Plan
+
+### Functional
+
+- Session transitions follow exact phase graph
+- Each phase writes expected rows and no duplicates
+- Verdict creation completes with required sections
+
+### Quality
+
+- Arguments remain concise and role-consistent
+- Evidence snapshot includes diversity checks
+- Verdict cites both agreement and disagreement zones
+
+### Reliability
+
+- Worker retry behavior is idempotent
+- Transient API failures recover without manual intervention
+- Frontend remains readable and updates in real time
+
+## 9) Runbook (Developer)
+
+1. Build backend orchestrator:
+
+```powershell
+cd jury-room-backend\orchestrator
+npm run build
 ```
-DISCOVERY_PENDING
-  ↓ [Orch: Tavily → ArmorIQ gate → ingestEvidence → freeze snapshot]
-DISCOVERY_DONE
-  ↓ [Orch: Claude prosecution → ArmorIQ gate → postArgument]
-PROSECUTION_DONE
-  ↓ [Orch: Claude defense → ArmorIQ gate → postArgument]
-DEFENSE_DONE
-  ↓ [Orch: Claude devil's advocate → ArmorIQ gate → postArgument]
-DEVILS_ADVOCATE_DONE
-  ↓ [Orch: (Llama fallacy scan in parallel) → markAnalyzing]
-SYNTHESIS_PENDING
-  ↓ [Orch: Gemini → ArmorIQ gate → finalizeVerdict → MongoDB]
-COMPLETED or FAILED
+
+2. Run frontend:
+
+```powershell
+cd ai-jury-frontend
+npm run dev
 ```
 
-**Hard Protections:**
-1. **Idempotency key** on every external action (Tavily search ID, Claude request ID, Gemini session hash)—retries don't duplicate
-2. **One writer per phase**—only orchestrator can call reducers, prevents race conditions
-3. **Message status lifecycle**—DRAFT → VALIDATED → BROADCASTABLE → SPOKEN (ArmorIQ and TTS don't conflict)
-4. **Evidence freeze**—no new evidence after DISCOVERY_DONE (facts don't mutate during debate)
-5. **Message snapshot ref**—every verdict stores `evidence_snapshot_id` for full auditability
+3. Verify health:
 
----
+- Frontend loads and lists sessions
+- Orchestrator logs all worker start messages
+- New session can progress from discovery to synthesis
 
-## 🚀 Setup & Deployment
+## 10) Definition of Done for Research-Grade v1
 
-1. **Start SpacetimeDB server:**
-   ```powershell
-   spacetime start
-   ```
+The enhanced workflow is considered complete when:
 
-2. **Publish schema to server:**
-   ```powershell
-   cd jury-room-backend\ai-jury-board
-   spacetime publish ai-jury-board
-   ```
-
-3. **Generate TypeScript client bindings:**
-   ```powershell
-   spacetime generate --lang typescript --out-dir ..\..\ai-jury-frontend\src\module_bindings
-   ```
-
-4. **Create `.env` file in project root:**
-   ```env
-   SPACETIME_URI=http://localhost:3000
-   SPACETIME_DB=ai-jury-board
-   
-   CLAUDE_API_KEY=sk-...
-   GEMINI_API_KEY=...
-   TAVILY_API_KEY=...
-   LLAMA_API_KEY=...
-   ARMOR_IQ_KEY=...
-   ELEVENLABS_API_KEY=...
-   
-   MONGODB_URI=mongodb+srv://...
-   ```
-
-5. **Install dependencies & build orchestrator:**
-   ```powershell
-   npm install
-   npm run build
-   npm run start:orchestrator
-   ```
-
-6. **Start frontend (separate terminal):**
-   ```powershell
-   cd ai-jury-frontend
-   npm run dev
-   ```
-
-7. **Verify end-to-end:**
-   - Open http://localhost:5173
-   - Create a session → watch orchestrator logs
-   - Evidence ingests, then debate progresses phase-by-phase
-   - Check SpacetimeDB dashboard for session phases
-   - Verify final verdict + evidence_snapshot_id in MongoDB
-
----
-
-## � Implementation Tracker
-
-| Component | Status | Location | Notes |
-|-----------|--------|----------|-------|
-| **Spacetime Schema** | ✅ Done | `spacetimedb/src/schema.ts` | Tables: JurySession, Evidence, Message, Alert, Verdict |
-| **Spacetime Reducers** | ✅ Done | `spacetimedb/src/index.ts` | All 7 reducers implemented |
-| **Frontend UI Harness** | ✅ Done | `ai-jury-frontend/src/App.tsx` | Session creation & start debate UI |
-| **Phase Transition System** | ✅ Done | `spacetimedb/src/schema.ts` + `spacetimedb/src/index.ts` | Strict phase machine implemented: DISCOVERY_PENDING → ... → COMPLETED/FAILED with reducer guards |
-| **Evidence Snapshot Ref** | ✅ Done | `spacetimedb/src/schema.ts` + `spacetimedb/src/index.ts` | `evidenceSnapshotId` added to Session/Message/Verdict and frozen during discovery |
-| **Message Status Lifecycle** | ✅ Done | `spacetimedb/src/schema.ts` + `spacetimedb/src/index.ts` | `messageStatus` added with guarded `advanceMessageStatus` reducer enforcing DRAFT → VALIDATED → BROADCASTABLE → SPOKEN |
-| **Idempotency Keys** | ✅ Done | `spacetimedb/src/schema.ts` + `spacetimedb/src/index.ts` | `idempotencyKey` added to Evidence/Message/Verdict with indexed dedupe checks in reducers |
-| **Orchestrator Entry Point** | ⏳ Pending | `orchestrator/index.ts` | Boot all workers, watch phase transitions, enforce one-writer lock per phase |
-| **Discovery Worker** | ⏳ Pending | `orchestrator/workers/discovery.ts` | Poll DISCOVERY_PENDING → Tavily (ArmorIQ gate) → ingestEvidence → DISCOVERY_DONE |
-| **Prosecution Worker** | ⏳ Pending | `orchestrator/workers/prosecution.ts` | Poll DISCOVERY_DONE → Claude prosecution (ArmorIQ gate) → postArgument → PROSECUTION_DONE |
-| **Defense Worker** | ⏳ Pending | `orchestrator/workers/defense.ts` | Poll PROSECUTION_DONE → Claude defense (ArmorIQ gate) → postArgument → DEFENSE_DONE |
-| **Devil's Advocate Worker** | ⏳ Pending | `orchestrator/workers/devils_advocate.ts` | Poll DEFENSE_DONE → Claude/Grok contrarian (ArmorIQ gate) → postArgument → DEVILS_ADVOCATE_DONE |
-| **Llama Fallacy Worker** | ⏳ Pending | `orchestrator/workers/fallacy.ts` | Subscribe Message table → Llama analysis → recordFallacyAlert (advisory only, no rewrites) |
-| **ElevenLabs Audio Worker** | ⏳ Pending | `orchestrator/workers/audio.ts` | Subscribe Message table → ElevenLabs TTS → stream WebSocket → update status SPOKEN |
-| **Synthesis Worker** | ⏳ Pending | `orchestrator/workers/synthesis.ts` | Poll SYNTHESIS_PENDING → Gemini (frozen snapshot + messages) → ArmorIQ gate → finalizeVerdict → MongoDB |
-| **ArmorIQ Policy Gates** | ⏳ Pending | `orchestrator/armor.ts` | Validate pre-Tavily, pre-Claude, pre-Gemini, pre-TTS, pre-MongoDB |
-| **Frontend Audio Player** | ⏳ Pending | `ai-jury-frontend/src/App.tsx` | Subscribe Message table (status=SPOKEN) → render streaming waveform |
-| **MongoDB Public Record** | ⏳ Pending | `orchestrator/workers/mongodb.ts` | Write final Verdict with evidence_snapshot_id + debate metadata for audit log |
-
----
-
-## 🛡️ Governance & Ethics
-
-**Tri-Agent Debate Model:**
-- **Prosecution (Pro):** Maximalist perspective—supports the thesis aggressively.
-- **Defense (Con):** Minimalist perspective—opposes the thesis empathetically.
-- **Devil's Advocate (Reality):** Pragmatist perspective—questions both sides, surfaces edge cases and nuance.
-
-**Devil's Advocate Implementation:**
-- Model: Claude 4.5 with explicit contrarian system prompt (or Grok if contrarian depth is prioritized)
-- Enters after DEFENSE_DONE
-- Reads evidence snapshot + both prosecution and defense messages
-- Generates critiques on logical assumptions, hidden dependencies, empirical gaps
-- Does NOT announce a winner; focuses on "what breaks this argument?"
-
-**ArmorIQ Enforcement (Node.js orchestrator, NOT in-reducer):**
-- Pre-Tavily gate: "Is this a legitimate evidence search, not a jailbreak?"
-- Pre-Claude gate: "Does the message enforce the assigned persona?"
-- Pre-Gemini gate: "Is the synthesis neutral or biased toward one side?"
-- Pre-TTS gate: "Should this audio be broadcast (on-topic, not offensive)?"
-- Pre-MongoDB gate: "Should this verdict be published (grounded in evidence)?"
-
-Rejected turns are logged as `alert` (severity=POLICY_VIOLATION) and the debate continues. One failed message never blocks the session.
-
-**Auditability:**
-Every verdict stores `evidence_snapshot_id`, so any future review can see *exactly* what facts were available when the decision was made. This prevents "we changed our facts midway" arguments and builds immutable debate records.
+- Multi-source evidence curation and bias checks are enforced
+- Policy gates are active for all external actions
+- Debate quality scores are generated and used in-loop
+- Synthesis is structured, neutral, and audit-linked
+- Audio lifecycle to `SPOKEN` is implemented
+- Regression suite demonstrates stable end-to-end behavior

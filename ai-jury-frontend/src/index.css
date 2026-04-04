@@ -473,6 +473,22 @@ body {
   font-size: 0.9rem;
 }
 
+.entry-points {
+  margin: 6px 0 0;
+  padding-left: 1rem;
+  color: #2f4850;
+}
+
+.entry-points li {
+  line-height: 1.42;
+  font-size: 0.84rem;
+  margin-bottom: 4px;
+}
+
+.entry-points li:last-child {
+  margin-bottom: 0;
+}
+
 .entry-meta {
   margin-top: 8px;
   display: flex;

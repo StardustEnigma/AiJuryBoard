@@ -7,18 +7,26 @@
 
 import { JURY_ROLE, SESSION_PHASE, SESSION_TURN, toCanonicalRole } from '../constants.js';
 import { getConnection, DebateSession, Message } from '../spacetime.js';
-import { callLlamaLarge } from '../utils/apis.js';
+import { callLlamaLarge, clampToWords } from '../utils/apis.js';
+import { gateGeneratedArgument } from '../utils/policy.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
 
-const DEVILS_ADVOCATE_PROMPT = `You are the Devil's Advocate in a formal debate. Your role is NOT to take sides, but to act as a pragmatist/skeptic.
+const DEVILS_ADVOCATE_PROMPT = `You are the Devil's Advocate.
+Do not take sides. Use simple language.
+
 Rules:
-- Identify logical gaps and unstated assumptions in both prosecution and defense
-- Ask "what if?" questions that probe edge cases
-- Point out missing evidence or alternative interpretations
-- Focus on empirical reality over ideology
-- Suggest ways both sides could be wrong or incomplete
-- Do NOT advocate for either side - instead surface the hidden complexities
-Generate your devil's advocate critique in 2-3 paragraphs.`;
+- Short lines only.
+- No complex vocabulary.
+- List exactly 3 weak points.
+- Ask 1 practical "what if" question.
+
+Format:
+Gap 1:
+Gap 2:
+Gap 3:
+Question:
+
+Limit: 60 to 80 words total.`;
 
 export async function runDevilsAdvocateWorker(intervalMs = 20000) {
   log('😈', "Devil's Advocate Worker started");
@@ -69,7 +77,13 @@ async function processDevilsAdvocateSession(conn: any, session: DebateSession) {
     const defenseContext = defenseMsg ? `DEFENSE:\n${defenseMsg.content}\n\n` : '';
 
     const systemPrompt = `${DEVILS_ADVOCATE_PROMPT}\n\n${prosecutionContext}${defenseContext}Generate your critique now.`;
-    const critique = await callLlamaLarge(systemPrompt);
+    const critiqueRaw = await callLlamaLarge(systemPrompt);
+    const policyCheck = gateGeneratedArgument(JURY_ROLE.DEVILS_ADVOCATE, critiqueRaw, 80);
+    if (policyCheck.warnings.length > 0) {
+      log('🛡️', `Devil's advocate output sanitized for session ${sessionId}: ${policyCheck.warnings.join(', ')}`);
+    }
+
+    const critique = clampToWords(policyCheck.sanitizedText, 80);
 
     // Write via reducer
     await conn.reducers.postArgument({
@@ -87,6 +101,8 @@ async function processDevilsAdvocateSession(conn: any, session: DebateSession) {
       worker: 'devils_advocate',
       sessionId: sessionId.toString(),
       action: 'devils_advocate_critique_generated',
+      policyWarnings: policyCheck.warnings,
+      policyReason: policyCheck.reason,
       idempotencyKey,
       success: true,
     });

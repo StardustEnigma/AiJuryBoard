@@ -8,6 +8,8 @@
 import { SESSION_PHASE } from '../constants.js';
 import { getConnection, DebateSession } from '../spacetime.js';
 import { searchTavily } from '../utils/apis.js';
+import { curateEvidenceSnapshot } from '../utils/evidence.js';
+import { gateSearchTopic } from '../utils/policy.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
 
 export async function runDiscoveryWorker(intervalMs = 10000) {
@@ -64,11 +66,39 @@ async function processDiscoverySession(conn: any, session: DebateSession) {
   try {
     log('🔍', `Processing session ${sessionId}: "${topic}"`);
 
-    // Search for evidence on the topic
-    const searchResults = await searchTavily(topic);
+    const topicCheck = gateSearchTopic(topic);
+    if (!topicCheck.allowed) {
+      logError('DISCOVERY', `Policy blocked topic for session ${sessionId}: ${topicCheck.reason}`);
+      await writeAuditLog({
+        worker: 'discovery',
+        sessionId: sessionId.toString(),
+        topic,
+        status: 'blocked',
+        policyReason: topicCheck.reason,
+        policyWarnings: topicCheck.warnings,
+        idempotencyKey,
+      });
+      return;
+    }
 
-    const bestResult = searchResults.results[0];
-    if (!bestResult) {
+    const safeTopic = topicCheck.sanitizedText;
+    if (topicCheck.warnings.length > 0) {
+      log('🛡️', `Discovery topic sanitized for session ${sessionId}: ${topicCheck.warnings.join(', ')}`);
+    }
+
+    // Search for evidence on the topic
+    const primarySearch = await searchTavily(safeTopic);
+
+    let combinedResults = [...primarySearch.results];
+    try {
+      const counterSearch = await searchTavily(`${safeTopic} opposing viewpoints criticism counter evidence`);
+      combinedResults = [...combinedResults, ...counterSearch.results];
+    } catch (error) {
+      log('🔍', `Counter-view query unavailable, using primary evidence only: ${error}`);
+    }
+
+    const curated = curateEvidenceSnapshot(safeTopic, combinedResults, 3);
+    if (curated.selected.length === 0) {
       throw new Error('Tavily returned no evidence results');
     }
 
@@ -76,20 +106,26 @@ async function processDiscoverySession(conn: any, session: DebateSession) {
     await conn.reducers.ingestEvidence({
       sessionId,
       idempotencyKey,
-      source: bestResult.url || 'Unknown',
-      title: bestResult.title || 'Evidence Snapshot',
-      content: bestResult.content || 'No content provided',
-      url: bestResult.url,
+      source: curated.source,
+      title: curated.title,
+      content: curated.content,
+      url: curated.url,
     });
 
-    logSuccess('🔍', `Ingested evidence and advanced session ${sessionId} to DISCOVERY_DONE`);
+    logSuccess(
+      '🔍',
+      `Ingested curated evidence snapshot (${curated.selected.length} sources) and advanced session ${sessionId} to DISCOVERY_DONE`
+    );
 
     await writeAuditLog({
       worker: 'discovery',
       sessionId: sessionId.toString(),
       topic,
-      evidenceCount: searchResults.results.length,
-      selectedEvidenceTitle: bestResult.title,
+      evidenceCount: combinedResults.length,
+      selectedEvidenceTitle: curated.title,
+      selectedEvidenceSources: curated.selected.map((result) => result.url),
+      diversityReport: curated.diversityReport,
+      policyWarnings: topicCheck.warnings,
       status: 'completed',
       idempotencyKey,
     });

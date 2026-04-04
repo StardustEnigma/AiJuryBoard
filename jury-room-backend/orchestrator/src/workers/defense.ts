@@ -7,17 +7,26 @@
 
 import { JURY_ROLE, SESSION_PHASE, SESSION_TURN, toCanonicalRole } from '../constants.js';
 import { getConnection, DebateSession, Message } from '../spacetime.js';
-import { callMixtral } from '../utils/apis.js';
+import { callMixtral, clampToWords } from '../utils/apis.js';
+import { gateGeneratedArgument } from '../utils/policy.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
 
-const DEFENSE_PROMPT = `You are the Defense in a formal debate. Your role is to argue AGAINST the motion and defend the status quo or propose an alternative.
+const DEFENSE_PROMPT = `You are the Defense in a debate.
+Use plain English only.
+
 Rules:
-- Be empathetic but rigorous
-- Highlight weaknesses, unintended consequences, and risks in the prosecution's position
-- Use evidence and logic to build counterarguments
-- Acknowledge valid points from prosecution but explain why they don't override your position
-- Focus on fairness, safety, and evidence-based reasoning
-Generate your defense argument in 2-3 paragraphs.`;
+- Short, simple sentences.
+- No complex or high-level words.
+- Give exactly 3 counterpoints.
+- One simple closing line.
+
+Format:
+Counterpoint 1:
+Counterpoint 2:
+Counterpoint 3:
+Closing:
+
+Limit: 70 to 90 words total.`;
 
 export async function runDefenseWorker(intervalMs = 15000) {
   log('🛡️', 'Defense Worker started');
@@ -62,7 +71,13 @@ async function processDefenseSession(conn: any, session: DebateSession) {
     const prosecutionContext = prosecutionMsg ? `Prosecution said:\n${prosecutionMsg.content}\n\n` : '';
 
     const systemPrompt = `${DEFENSE_PROMPT}\n\n${prosecutionContext}Generate your response now.`;
-    const defenseArg = await callMixtral(systemPrompt);
+    const defenseArgRaw = await callMixtral(systemPrompt);
+    const policyCheck = gateGeneratedArgument(JURY_ROLE.DEFENSE, defenseArgRaw, 90);
+    if (policyCheck.warnings.length > 0) {
+      log('🛡️', `Defense output sanitized for session ${sessionId}: ${policyCheck.warnings.join(', ')}`);
+    }
+
+    const defenseArg = clampToWords(policyCheck.sanitizedText, 90);
 
     // Write via reducer
     await conn.reducers.postArgument({
@@ -79,6 +94,8 @@ async function processDefenseSession(conn: any, session: DebateSession) {
       sessionId: sessionId.toString(),
       round: roundNumber.toString(),
       argumentLength: defenseArg.length,
+      policyWarnings: policyCheck.warnings,
+      policyReason: policyCheck.reason,
       status: 'completed',
       idempotencyKey,
     });

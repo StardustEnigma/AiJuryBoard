@@ -52,6 +52,70 @@ function formatLabel(value: string): string {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function cleanMarkdownText(value: string): string {
+  return value
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .trim();
+}
+
+function toMessagePoints(value: string): string[] {
+  const trimmed = cleanMarkdownText(value).trim();
+  if (!trimmed) return [];
+
+  const rawLines = trimmed
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const normalizedLines = rawLines
+    .map((line) => line.replace(/^[-*•\d]+[.)]?\s+/, '').trim())
+    .filter(Boolean);
+
+  if (normalizedLines.length >= 2 && normalizedLines.length <= 6) {
+    return normalizedLines;
+  }
+
+  const normalizedText = trimmed.replace(/\s+/g, ' ').trim();
+  const sentences = normalizedText
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  if (sentences.length === 0) {
+    return [normalizedText];
+  }
+
+  const grouped: string[] = [];
+  let bucket = '';
+
+  for (const sentence of sentences) {
+    const candidate = bucket ? `${bucket} ${sentence}` : sentence;
+    const candidateWordCount = candidate.split(' ').filter(Boolean).length;
+
+    // Keep each bullet compact but meaningful.
+    if (!bucket || candidateWordCount <= 26) {
+      bucket = candidate;
+    } else {
+      grouped.push(bucket);
+      bucket = sentence;
+    }
+  }
+
+  if (bucket) {
+    grouped.push(bucket);
+  }
+
+  if (grouped.length <= 6) {
+    return grouped;
+  }
+
+  const compact = grouped.slice(0, 5);
+  compact.push(grouped.slice(5).join(' '));
+  return compact;
+}
+
 function statusClass(status: string): string {
   const normalized = status.toUpperCase();
 
@@ -350,7 +414,7 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
                   {sessionEvidence.map((evidence) => (
                     <article key={evidence.id.toString()} className="evidence-card">
                       <h4 className="entry-title">{evidence.title}</h4>
-                      <p className="entry-content">{evidence.content}</p>
+                      <p className="entry-content">{cleanMarkdownText(evidence.content)}</p>
                       <div className="entry-meta">
                         <span>{evidence.source}</span>
                         {evidence.url && (
@@ -378,7 +442,11 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
                         <span className="chip chip-neutral">Round {toBigInt(message.roundNumber).toString()}</span>
                         <span className="chip chip-neutral">{formatLabel(message.messageStatus ?? 'DRAFT')}</span>
                       </div>
-                      <p className="entry-content">{message.content}</p>
+                      <ul className="entry-points" title={cleanMarkdownText(message.content)}>
+                        {toMessagePoints(message.content).map((point, index) => (
+                          <li key={`${message.id.toString()}-${index}`}>{point}</li>
+                        ))}
+                      </ul>
                     </article>
                   ))}
                 </div>
@@ -400,7 +468,7 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
                           Message #{alert.messageId ? alert.messageId.toString() : 'N/A'}
                         </span>
                       </div>
-                      <p className="entry-content">{alert.content}</p>
+                      <p className="entry-content">{cleanMarkdownText(alert.content)}</p>
                     </article>
                   ))}
                 </div>
@@ -414,9 +482,9 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
               ) : (
                 <article className="verdict-card">
                   <h4 className="entry-title">Decision</h4>
-                  <p className="entry-content">{sessionVerdicts[0].decision}</p>
+                  <p className="entry-content">{cleanMarkdownText(sessionVerdicts[0].decision)}</p>
                   <h4 className="entry-title">Summary</h4>
-                  <p className="entry-content">{sessionVerdicts[0].summary}</p>
+                  <p className="entry-content">{cleanMarkdownText(sessionVerdicts[0].summary)}</p>
                 </article>
               )}
             </section>

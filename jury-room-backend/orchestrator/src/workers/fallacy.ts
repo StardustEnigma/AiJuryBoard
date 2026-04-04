@@ -8,6 +8,7 @@
 import { getConnection, Message, DebateSession } from '../spacetime.js';
 import { JURY_ROLE, toCanonicalRole } from '../constants.js';
 import { callLlama } from '../utils/apis.js';
+import { gateFallacyOutput } from '../utils/policy.js';
 import { log, logSuccess, logError, writeAuditLog } from '../utils/logger.js';
 
 const FALLACY_ANALYSIS_PROMPT = `You are a logical fallacy detector. Analyze the following argument and identify any logical fallacies.
@@ -63,7 +64,12 @@ async function analyzeFallacy(conn: any, message: Message) {
     log('🔎', `Analyzing message ${message.id} for fallacies`);
 
     const prompt = `${FALLACY_ANALYSIS_PROMPT}\n\n"${message.content}"`;
-    const analysis = await callLlama(prompt);
+    const analysisRaw = await callLlama(prompt);
+    const policyCheck = gateFallacyOutput(analysisRaw);
+    if (policyCheck.warnings.length > 0) {
+      log('🛡️', `Fallacy output sanitized for message ${message.id}: ${policyCheck.warnings.join(', ')}`);
+    }
+    const analysis = policyCheck.sanitizedText;
 
     // Parse analysis
     const fallacyMatch = analysis.match(/FALLACIES:\s*(.+?)(?:\n|$)/i);
@@ -92,6 +98,8 @@ async function analyzeFallacy(conn: any, message: Message) {
         sessionId: message.sessionId.toString(),
         fallacy: fallacies,
         severity,
+        policyWarnings: policyCheck.warnings,
+        policyReason: policyCheck.reason,
         status: 'alert_recorded',
       });
     } else {

@@ -5,22 +5,22 @@
 /* tslint:disable */
 import { DbConnectionBuilder as __DbConnectionBuilder, DbConnectionImpl as __DbConnectionImpl, SubscriptionBuilderImpl as __SubscriptionBuilderImpl, convertToAccessorMap as __convertToAccessorMap, makeQueryBuilder as __makeQueryBuilder, procedures as __procedures, reducerSchema as __reducerSchema, reducers as __reducers, schema as __schema, table as __table, } from "spacetimedb";
 // Import all reducer arg schemas
-import AdvanceMessageStatusReducer from "./advance_message_status_reducer";
-import CreateSessionReducer from "./create_session_reducer";
-import FailSessionReducer from "./fail_session_reducer";
-import FinalizeVerdictReducer from "./finalize_verdict_reducer";
-import IngestEvidenceReducer from "./ingest_evidence_reducer";
-import MarkAnalyzingReducer from "./mark_analyzing_reducer";
-import PostArgumentReducer from "./post_argument_reducer";
-import RecordFallacyAlertReducer from "./record_fallacy_alert_reducer";
-import StartDebateReducer from "./start_debate_reducer";
+import AdvanceMessageStatusReducer from "./advance_message_status_reducer.js";
+import CreateSessionReducer from "./create_session_reducer.js";
+import FailSessionReducer from "./fail_session_reducer.js";
+import FinalizeVerdictReducer from "./finalize_verdict_reducer.js";
+import IngestEvidenceReducer from "./ingest_evidence_reducer.js";
+import MarkAnalyzingReducer from "./mark_analyzing_reducer.js";
+import PostArgumentReducer from "./post_argument_reducer.js";
+import RecordFallacyAlertReducer from "./record_fallacy_alert_reducer.js";
+import StartDebateReducer from "./start_debate_reducer.js";
 // Import all procedure arg schemas
 // Import all table schema definitions
-import AlertRow from "./alert_table";
-import EvidenceRow from "./evidence_table";
-import JurySessionRow from "./jury_session_table";
-import MessageRow from "./message_table";
-import VerdictRow from "./verdict_table";
+import AlertRow from "./alert_table.js";
+import EvidenceRow from "./evidence_table.js";
+import JurySessionRow from "./jury_session_table.js";
+import MessageRow from "./message_table.js";
+import VerdictRow from "./verdict_table.js";
 /** Type-only namespace exports for generated type groups. */
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({

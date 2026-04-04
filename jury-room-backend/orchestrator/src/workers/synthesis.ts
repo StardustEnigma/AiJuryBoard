@@ -9,16 +9,24 @@
 import { MongoClient, Db } from 'mongodb';
 import { SESSION_PHASE } from '../constants.js';
 import { getConnection, DebateSession, Message, Evidence } from '../spacetime.js';
-import { callLlamaLarge } from '../utils/apis.js';
+import { callLlamaLarge, clampToWords } from '../utils/apis.js';
+import { gateSynthesisOutput } from '../utils/policy.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
 
 let mongoDb: Db | null = null;
+let mongoDisabledLogged = false;
 
-async function getMongoDb(): Promise<Db> {
+async function getMongoDb(): Promise<Db | null> {
   if (mongoDb) return mongoDb;
 
   const uri = process.env.MONGODB_URI;
-  if (!uri) throw new Error('MONGODB_URI not set');
+  if (!uri) {
+    if (!mongoDisabledLogged) {
+      log('📊', 'MONGODB_URI not set, skipping MongoDB persistence');
+      mongoDisabledLogged = true;
+    }
+    return null;
+  }
 
   log('📊', 'Connecting to MongoDB...');
   const client = new MongoClient(uri);
@@ -28,17 +36,23 @@ async function getMongoDb(): Promise<Db> {
   return mongoDb;
 }
 
-const SYNTHESIS_PROMPT = `You are the Neutral Analyst in a formal debate. Your task is to synthesize the arguments and identify the "Shared Reality" - the points where both sides acknowledge truth, even if they disagree on implications.
+const SYNTHESIS_PROMPT = `You are a neutral analyst.
+Use very simple language.
 
-Analyze the debate and provide:
-1. PROSECUTION_SUMMARY: The core argument from the prosecution side
-2. DEFENSE_SUMMARY: The core argument from the defense side
-3. DEVIL_ADVOCATE_ANALYSIS: Key questions or gaps identified
-4. SHARED_REALITY: Points where both sides would agree, or universal principles that apply
-5. REMAINING_DISAGREEMENT: Where the true disagreement lies (values, priorities, empirical facts)
-6. VERDICT: Your assessment of the stronger position based on evidence and logic
+Return these sections in short lines:
+PROSECUTION_SUMMARY:
+DEFENSE_SUMMARY:
+DEVIL_ADVOCATE_ANALYSIS:
+SHARED_REALITY:
+REMAINING_DISAGREEMENT:
+VERDICT:
 
-Be objective, neutral, and grounded in the evidence presented.`;
+Rules:
+- No complex words.
+- No long paragraphs.
+- Keep each section concise.
+
+Limit: 100 to 130 words total.`;
 
 export async function runSynthesisWorker(intervalMs = 30000) {
   log('✨', 'Synthesis Worker started');
@@ -101,7 +115,13 @@ EVIDENCE AVAILABLE:
 ${evidenceSummary}`;
 
     // Call Llama 70B to synthesize
-    const synthesis = await callLlamaLarge(synthesisPrompt);
+    const synthesisRaw = await callLlamaLarge(synthesisPrompt);
+    const policyCheck = gateSynthesisOutput(synthesisRaw, 130);
+    if (policyCheck.warnings.length > 0) {
+      log('🛡️', `Synthesis output sanitized for session ${sessionId}: ${policyCheck.warnings.join(', ')}`);
+    }
+
+    const synthesis = clampToWords(policyCheck.sanitizedText, 130);
 
     // Parse synthesis (simple extraction)
     const verdict = synthesis.split('VERDICT:')[1]?.trim() || synthesis.substring(0, 500);
@@ -118,17 +138,20 @@ ${evidenceSummary}`;
 
     // Store in MongoDB for public record
     const db = await getMongoDb();
-    await db.collection('verdicts').insertOne({
-      sessionId: sessionId.toString(),
-      topic: session.topic,
-      synthesis,
-      verdict,
-      messageCount: messages.length,
-      evidenceCount: evidence.length,
-      createdAt: new Date(),
-    });
+    if (db) {
+      await db.collection('verdicts').insertOne({
+        sessionId: sessionId.toString(),
+        topic: session.topic,
+        synthesis,
+        verdict,
+        policyWarnings: policyCheck.warnings,
+        messageCount: messages.length,
+        evidenceCount: evidence.length,
+        createdAt: new Date(),
+      });
 
-    logSuccess('📊', `Verdict stored in MongoDB for session ${sessionId}`);
+      logSuccess('📊', `Verdict stored in MongoDB for session ${sessionId}`);
+    }
 
     await writeAuditLog({
       worker: 'synthesis',
@@ -136,6 +159,8 @@ ${evidenceSummary}`;
       synthesisLength: synthesis.length,
       messageCount: messages.length,
       evidenceCount: evidence.length,
+      policyWarnings: policyCheck.warnings,
+      policyReason: policyCheck.reason,
       status: 'completed',
       idempotencyKey,
     });
