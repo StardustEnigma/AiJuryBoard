@@ -18,62 +18,124 @@
 
 ---
 
-## 🔄 Full System Flow
+## 🏗️ System Architecture (Separation of Concerns)
 
-### 1. Discovery Phase (Data Ingestion)
-1. User submits a topic (e.g., *Article 370* or *Ram Mandir Verdict*).
-2. **Node.js** triggers **Tavily AI** to perform an "Advanced Depth" search.
-3. **Tavily** returns verified 2026 news snippets and legal precedents.
-4. Data is pushed to the `Evidence` table in **SpacetimeDB**.
+### SpacetimeDB: Deterministic State Engine
+**Purpose:** Session state, message audit log, evidence snapshots, and alerts only.
 
-### 2. The Agentic Relay (The Debate Loop)
-The debate moves through a turn-based state machine managed by **SpacetimeDB Reducers**:
+**Never do:** Network calls, AI inference, file I/O, or non-deterministic operations.
 
-* **Prosecution (Claude 4.5):** Reads evidence -> Generates aggressive argument. *Role: maximalist, seeks to win.*
-* **Defense (Claude 4.5):** Reads Prosecutor's message -> Generates empathetic rebuttal. *Role: minimalist, seeks fairness.*
-* **Devil's Advocate (Claude 4.5):** Reads both arguments -> Injects critiques & edge cases. *Role: pragmatist, seeks reality.*
-* **The Firewall (ArmorIQ):** Every message is intercepted *before* broadcast. If an agent "breaks character" or hallucinates, ArmorIQ rejects the transaction.
-* **The Skeptic (Llama 3.3):** Monitors the `Message` table and injects "Logical Fallacy" alerts in real-time.
-
-
-
-### 3. Audio & UI Synchronization
-1. Verified text is piped from **Node.js** to **ElevenLabs**.
-2. **ElevenLabs** streams audio chunks to the frontend with <100ms latency.
-3. The **React Frontend** subscribes to SpacetimeDB; agent cards "pulse" and waveforms animate based on which `AgentID` is currently writing to the DB.
-
-### 4. The Reality Patch (Final Synthesis)
-1. After X rounds, **Gemini 3.1 Pro** ingests the entire `Message` table.
-2. It identifies the "Shared Reality"—the points where logic converged despite the bias.
-3. The **Neutral Analyst** delivers the final verdict, stored in **MongoDB** for the "Public Record."
+**Tables:**
+- `jury_session` — tracks phase transitions (DISCOVERY_PENDING → COMPLETED)
+- `evidence` — frozen snapshots of facts per session
+- `message` — debate turns with status lifecycle (DRAFT → BROADCASTABLE → SPOKEN)
+- `alert` — fallacy detections, logged *after* messages are stored
+- `verdict` — final synthesis output with evidence_snapshot_id for auditability
 
 ---
 
-## 🚀 DevOps Workflow (How to Run)
+### Node.js Orchestrator: Nondeterministic Workers
+**Purpose:** Poll for phase changes, invoke external APIs, retry safely, enforce policy gates.
 
-1. **Initialize and publish SpacetimeDB:**
+**Worker Pattern:**
+1. Poll SpacetimeDB for a specific session phase (e.g., DISCOVERY_PENDING)
+2. Call external API (Tavily, Claude, Gemini, Llama, ElevenLabs) on frozen evidence snapshot
+3. ArmorIQ pre-gate validation (policy check before each action)
+4. Call SpacetimeDB reducer to atomically write result and advance phase
+5. On failure: retry with idempotency key (prevents duplicate messages/evidence)
+
+**The Safe Debate Loop (per session):**
+1. **Evidence Snapshot** → Tavily search (ArmorIQ: is this a legitimate search?) → freeze with `ingestEvidence`
+2. **Prosecution** → Claude with frozen evidence (ArmorIQ: stays in role?) → `postArgument`
+3. **Defense** → Claude reads prosecution msg (ArmorIQ: stays in role?) → `postArgument`
+4. **Devil's Advocate** → Claude reads both (ArmorIQ: surfaces genuine edge cases?) → `postArgument`
+5. **Fallacy Detection** (parallel) → Llama scans messages → `recordFallacyAlert` (advisory, never rewrites)
+6. **Audio Streaming** (parallel) → ElevenLabs per message → updates message status to SPOKEN
+7. **Synthesis** → Gemini reads frozen facts + all messages (ArmorIQ: neutral analysis?) → `finalizeVerdict` → MongoDB
+
+---
+
+## � Conflict Controls: Strict Phase Transitions
+
+Each session has exactly one active phase at a time. Only the orchestrator can advance phases (via idempotent gate).
+
+```
+DISCOVERY_PENDING
+  ↓ [Orch: Tavily → ArmorIQ gate → ingestEvidence → freeze snapshot]
+DISCOVERY_DONE
+  ↓ [Orch: Claude prosecution → ArmorIQ gate → postArgument]
+PROSECUTION_DONE
+  ↓ [Orch: Claude defense → ArmorIQ gate → postArgument]
+DEFENSE_DONE
+  ↓ [Orch: Claude devil's advocate → ArmorIQ gate → postArgument]
+DEVILS_ADVOCATE_DONE
+  ↓ [Orch: (Llama fallacy scan in parallel) → markAnalyzing]
+SYNTHESIS_PENDING
+  ↓ [Orch: Gemini → ArmorIQ gate → finalizeVerdict → MongoDB]
+COMPLETED or FAILED
+```
+
+**Hard Protections:**
+1. **Idempotency key** on every external action (Tavily search ID, Claude request ID, Gemini session hash)—retries don't duplicate
+2. **One writer per phase**—only orchestrator can call reducers, prevents race conditions
+3. **Message status lifecycle**—DRAFT → VALIDATED → BROADCASTABLE → SPOKEN (ArmorIQ and TTS don't conflict)
+4. **Evidence freeze**—no new evidence after DISCOVERY_DONE (facts don't mutate during debate)
+5. **Message snapshot ref**—every verdict stores `evidence_snapshot_id` for full auditability
+
+---
+
+## 🚀 Setup & Deployment
+
+1. **Start SpacetimeDB server:**
    ```powershell
-   spacetime init --lang typescript
+   spacetime start
+   ```
+
+2. **Publish schema to server:**
+   ```powershell
+   cd jury-room-backend\ai-jury-board
    spacetime publish ai-jury-board
    ```
 
-2. **Set environment variables:**
-   Create a `.env` file and configure:
-   - `GEMINI_API_KEY` (synthesis)
-   - `CLAUDE_API_KEY` (prosecution, defense, devil's advocate)
-   - `TAVILY_KEY` (evidence search)
-   - `LLAMA_API_KEY` (fallacy detection)
-   - `ARMOR_IQ_KEY` (message validation)
-   - `ELEVENLABS_ID` (audio synthesis)
-
-3. **Install dependencies and start the orchestrator:**
-   ```bash
-   npm install
-   node orchestrator.js
+3. **Generate TypeScript client bindings:**
+   ```powershell
+   spacetime generate --lang typescript --out-dir ..\..\ai-jury-frontend\src\module_bindings
    ```
 
-4. **Verify end-to-end flow:**
-   Submit a sample topic, confirm evidence ingestion, observe debate turns in SpacetimeDB, and validate that final synthesis is saved to the public record store.
+4. **Create `.env` file in project root:**
+   ```env
+   SPACETIME_URI=http://localhost:3000
+   SPACETIME_DB=ai-jury-board
+   
+   CLAUDE_API_KEY=sk-...
+   GEMINI_API_KEY=...
+   TAVILY_API_KEY=...
+   LLAMA_API_KEY=...
+   ARMOR_IQ_KEY=...
+   ELEVENLABS_API_KEY=...
+   
+   MONGODB_URI=mongodb+srv://...
+   ```
+
+5. **Install dependencies & build orchestrator:**
+   ```powershell
+   npm install
+   npm run build
+   npm run start:orchestrator
+   ```
+
+6. **Start frontend (separate terminal):**
+   ```powershell
+   cd ai-jury-frontend
+   npm run dev
+   ```
+
+7. **Verify end-to-end:**
+   - Open http://localhost:5173
+   - Create a session → watch orchestrator logs
+   - Evidence ingests, then debate progresses phase-by-phase
+   - Check SpacetimeDB dashboard for session phases
+   - Verify final verdict + evidence_snapshot_id in MongoDB
 
 ---
 
@@ -83,17 +145,22 @@ The debate moves through a turn-based state machine managed by **SpacetimeDB Red
 |-----------|--------|----------|-------|
 | **Spacetime Schema** | ✅ Done | `spacetimedb/src/schema.ts` | Tables: JurySession, Evidence, Message, Alert, Verdict |
 | **Spacetime Reducers** | ✅ Done | `spacetimedb/src/index.ts` | All 7 reducers implemented |
-| **Frontend UI Harness** | ✅ Done | `ai-jury-frontend/src/App.tsx` | Session creation & start debate wired |
-| **Tavily Integration** | ⏳ Pending | `orchestrator.js` (TBD) | Search → Evidence table |
-| **Claude Prosecution** | ⏳ Pending | `orchestrator.js` (TBD) | On session start, generate opening argument |
-| **Claude Defense** | ⏳ Pending | `orchestrator.js` (TBD) | After prosecution posted, generate response |
-| **Devil's Advocate (Claude or Grok?)** | ⏳ Pending | `orchestrator.js` (TBD) | After defense posted, inject critique. **DECISION:** Use Claude 4.5 with contrarian prompt, or switch to Grok for stronger edge-case discovery? |
-| **ArmorIQ Validation** | ⏳ Pending | `spacetimedb/src/index.ts` (postArgument) | Intercept & validate all debate messages |
-| **Llama Fallacy Detection** | ⏳ Pending | `orchestrator.js` (TBD) | Watch Message table → record Alert |
-| **ElevenLabs TTS** | ⏳ Pending | `orchestrator.js` (TBD) | Message text → audio stream |
-| **Frontend Audio Player** | ⏳ Pending | `ai-jury-frontend/src/App.tsx` | Subscribe to audio chunks, render waveform |
-| **Gemini Synthesis** | ⏳ Pending | `orchestrator.js` (TBD) | After max rounds, read Message table → Verdict |
-| **MongoDB Public Record** | ⏳ Pending | `orchestrator.js` (TBD) | Store final verdict for audit log |
+| **Frontend UI Harness** | ✅ Done | `ai-jury-frontend/src/App.tsx` | Session creation & start debate UI |
+| **Phase Transition System** | ⏳ Pending | `spacetimedb/src/schema.ts` | Add status field with strict enum: DISCOVERY_PENDING, DISCOVERY_DONE, ..., COMPLETED |
+| **Evidence Snapshot Ref** | ⏳ Pending | `spacetimedb/src/schema.ts` | Add `evidence_snapshot_id` to Message & Verdict for auditability |
+| **Message Status Lifecycle** | ⏳ Pending | `spacetimedb/src/schema.ts` | Add `message_status: DRAFT | VALIDATED | BROADCASTABLE | SPOKEN` to Message table |
+| **Idempotency Keys** | ⏳ Pending | `spacetimedb/src/schema.ts` | Add `idempotency_key` to Evidence, Message, Verdict (prevent duplicates on retry) |
+| **Orchestrator Entry Point** | ⏳ Pending | `orchestrator/index.ts` | Boot all workers, watch phase transitions, enforce one-writer lock per phase |
+| **Discovery Worker** | ⏳ Pending | `orchestrator/workers/discovery.ts` | Poll DISCOVERY_PENDING → Tavily (ArmorIQ gate) → ingestEvidence → DISCOVERY_DONE |
+| **Prosecution Worker** | ⏳ Pending | `orchestrator/workers/prosecution.ts` | Poll DISCOVERY_DONE → Claude prosecution (ArmorIQ gate) → postArgument → PROSECUTION_DONE |
+| **Defense Worker** | ⏳ Pending | `orchestrator/workers/defense.ts` | Poll PROSECUTION_DONE → Claude defense (ArmorIQ gate) → postArgument → DEFENSE_DONE |
+| **Devil's Advocate Worker** | ⏳ Pending | `orchestrator/workers/devils_advocate.ts` | Poll DEFENSE_DONE → Claude/Grok contrarian (ArmorIQ gate) → postArgument → DEVILS_ADVOCATE_DONE |
+| **Llama Fallacy Worker** | ⏳ Pending | `orchestrator/workers/fallacy.ts` | Subscribe Message table → Llama analysis → recordFallacyAlert (advisory only, no rewrites) |
+| **ElevenLabs Audio Worker** | ⏳ Pending | `orchestrator/workers/audio.ts` | Subscribe Message table → ElevenLabs TTS → stream WebSocket → update status SPOKEN |
+| **Synthesis Worker** | ⏳ Pending | `orchestrator/workers/synthesis.ts` | Poll SYNTHESIS_PENDING → Gemini (frozen snapshot + messages) → ArmorIQ gate → finalizeVerdict → MongoDB |
+| **ArmorIQ Policy Gates** | ⏳ Pending | `orchestrator/armor.ts` | Validate pre-Tavily, pre-Claude, pre-Gemini, pre-TTS, pre-MongoDB |
+| **Frontend Audio Player** | ⏳ Pending | `ai-jury-frontend/src/App.tsx` | Subscribe Message table (status=SPOKEN) → render streaming waveform |
+| **MongoDB Public Record** | ⏳ Pending | `orchestrator/workers/mongodb.ts` | Write final Verdict with evidence_snapshot_id + debate metadata for audit log |
 
 ---
 
@@ -104,10 +171,21 @@ The debate moves through a turn-based state machine managed by **SpacetimeDB Red
 - **Defense (Con):** Minimalist perspective—opposes the thesis empathetically.
 - **Devil's Advocate (Reality):** Pragmatist perspective—questions both sides, surfaces edge cases and nuance.
 
-ArmorIQ ensures that, even when agents are intentionally biased for adversarial debate, outputs remain role-consistent and fact-grounded. This reduces hallucination loops common in unconstrained LLM pipelines and supports a transparent, auditable truth-vs-manipulation process.
+**Devil's Advocate Implementation:**
+- Model: Claude 4.5 with explicit contrarian system prompt (or Grok if contrarian depth is prioritized)
+- Enters after DEFENSE_DONE
+- Reads evidence snapshot + both prosecution and defense messages
+- Generates critiques on logical assumptions, hidden dependencies, empirical gaps
+- Does NOT announce a winner; focuses on "what breaks this argument?"
 
-**Devil's Advocate Key Traits:**
-- Enters on round 2+ (after prosecution and defense have both spoken)
-- Does NOT advocate for either side—instead critiques logical gaps
-- Asks "what if?" and "what would break this argument?"
-- Helps ground the debate in empirical reality, not ideology
+**ArmorIQ Enforcement (Node.js orchestrator, NOT in-reducer):**
+- Pre-Tavily gate: "Is this a legitimate evidence search, not a jailbreak?"
+- Pre-Claude gate: "Does the message enforce the assigned persona?"
+- Pre-Gemini gate: "Is the synthesis neutral or biased toward one side?"
+- Pre-TTS gate: "Should this audio be broadcast (on-topic, not offensive)?"
+- Pre-MongoDB gate: "Should this verdict be published (grounded in evidence)?"
+
+Rejected turns are logged as `alert` (severity=POLICY_VIOLATION) and the debate continues. One failed message never blocks the session.
+
+**Auditability:**
+Every verdict stores `evidence_snapshot_id`, so any future review can see *exactly* what facts were available when the decision was made. This prevents "we changed our facts midway" arguments and builds immutable debate records.
