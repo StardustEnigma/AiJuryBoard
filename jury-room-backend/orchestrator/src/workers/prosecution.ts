@@ -1,11 +1,12 @@
 /**
  * Prosecution Worker
  * Polls for DISCOVERY_DONE sessions
- * Calls Claude with prosecution prompt
+ * Calls LLM with prosecution prompt
  * Writes message via postArgument reducer
  */
 
-import { getConnection, SessionPhase, DebateSession, Evidence } from '../spacetime.js';
+import { JURY_ROLE, SESSION_PHASE, SESSION_TURN } from '../constants.js';
+import { getConnection, DebateSession, Evidence } from '../spacetime.js';
 import { callMixtral } from '../utils/apis.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
 
@@ -26,13 +27,15 @@ export async function runProsecutionWorker(intervalMs = 15000) {
       const conn = getConnection();
       
       // Poll for sessions that just finished discovery
-      const sessions = await conn.db.jurySession.currentTurn.filter('PROSECUTION');
+      const sessions = await conn.db.jurySession.currentTurn.filter(SESSION_TURN.PROSECUTION);
       
       if (sessions.length > 0) {
         for (const session of sessions) {
           const s = session as DebateSession;
+          const roundNumber = typeof s.roundNumber === 'string' ? BigInt(s.roundNumber) : s.roundNumber;
+
           // Only process if status is DISCOVERY_DONE (after evidence ingestion)
-          if (s.status === 'DISCOVERY_DONE' && s.roundNumber === 1n) {
+          if (s.status === SESSION_PHASE.DISCOVERY_DONE && roundNumber === 1n) {
             await processProsecutionSession(conn, s);
           }
         }
@@ -65,7 +68,8 @@ async function processProsecutionSession(conn: any, session: DebateSession) {
     // Write via reducer
     await conn.reducers.postArgument({
       sessionId,
-      role: 'prosecution',
+      idempotencyKey,
+      role: JURY_ROLE.PROSECUTION,
       content: prosecutionArg,
     });
 

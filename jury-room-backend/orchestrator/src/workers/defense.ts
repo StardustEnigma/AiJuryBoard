@@ -1,10 +1,11 @@
 /**
  * Defense Worker
  * Polls for PROSECUTION_DONE status
- * Calls Claude with defense prompt + prosecution message
+ * Calls LLM with defense prompt + prosecution message
  * Writes message via postArgument reducer
  */
 
+import { JURY_ROLE, SESSION_PHASE, SESSION_TURN, toCanonicalRole } from '../constants.js';
 import { getConnection, DebateSession, Message } from '../spacetime.js';
 import { callMixtral } from '../utils/apis.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
@@ -26,12 +27,12 @@ export async function runDefenseWorker(intervalMs = 15000) {
       const conn = getConnection();
       
       // Poll for sessions where prosecution just finished
-      const sessions = await conn.db.jurySession.currentTurn.filter('DEFENSE');
+      const sessions = await conn.db.jurySession.currentTurn.filter(SESSION_TURN.DEFENSE);
       
       if (sessions.length > 0) {
         for (const session of sessions) {
           const s = session as DebateSession;
-          if (s.status === 'PROSECUTION_DONE') {
+          if (s.status === SESSION_PHASE.PROSECUTION_DONE) {
             await processDefenseSession(conn, s);
           }
         }
@@ -55,7 +56,9 @@ async function processDefenseSession(conn: any, session: DebateSession) {
 
     // Fetch prosecution message for context
     const messages = await conn.db.message.sessionId.filter(sessionId);
-    const prosecutionMsg = messages.find((m: Message) => m.role === 'prosecution');
+    const prosecutionMsg = messages.find(
+      (m: Message) => toCanonicalRole(m.role) === JURY_ROLE.PROSECUTION
+    );
     const prosecutionContext = prosecutionMsg ? `Prosecution said:\n${prosecutionMsg.content}\n\n` : '';
 
     const systemPrompt = `${DEFENSE_PROMPT}\n\n${prosecutionContext}Generate your response now.`;
@@ -64,7 +67,8 @@ async function processDefenseSession(conn: any, session: DebateSession) {
     // Write via reducer
     await conn.reducers.postArgument({
       sessionId,
-      role: 'defense',
+      idempotencyKey,
+      role: JURY_ROLE.DEFENSE,
       content: defenseArg,
     });
 

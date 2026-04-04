@@ -6,6 +6,7 @@
  */
 
 import { getConnection, Message, DebateSession } from '../spacetime.js';
+import { JURY_ROLE, toCanonicalRole } from '../constants.js';
 import { callLlama } from '../utils/apis.js';
 import { log, logSuccess, logError, writeAuditLog } from '../utils/logger.js';
 
@@ -37,7 +38,13 @@ export async function runFallacyWorker(intervalMs = 10000) {
         if (processedMessages.has(msgIdStr)) continue;
         
         // Skip if message is not from a debate agent
-        if (!['PROSECUTION', 'DEFENSE', 'DEVILS_ADVOCATE'].includes(msg.role)) continue;
+        const canonicalRole = toCanonicalRole(msg.role);
+        const isDebateRole =
+          canonicalRole === JURY_ROLE.PROSECUTION ||
+          canonicalRole === JURY_ROLE.DEFENSE ||
+          canonicalRole === JURY_ROLE.DEVILS_ADVOCATE;
+
+        if (!isDebateRole) continue;
 
         processedMessages.add(msgIdStr);
         await analyzeFallacy(conn, msg);

@@ -7,7 +7,8 @@
  */
 
 import { MongoClient, Db } from 'mongodb';
-import { getConnection, DebateSession, Message, Evidence, Verdict } from '../spacetime.js';
+import { SESSION_PHASE } from '../constants.js';
+import { getConnection, DebateSession, Message, Evidence } from '../spacetime.js';
 import { callLlamaLarge } from '../utils/apis.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
 
@@ -46,8 +47,8 @@ export async function runSynthesisWorker(intervalMs = 30000) {
     try {
       const conn = getConnection();
       
-      // Poll for sessions in ANALYZING status
-      const sessions = await conn.db.jurySession.status.filter('ANALYZING');
+      // Poll for sessions ready for synthesis after markAnalyzing.
+      const sessions = await conn.db.jurySession.status.filter(SESSION_PHASE.SYNTHESIS_PENDING);
       
       if (sessions.length > 0) {
         for (const session of sessions) {
@@ -108,6 +109,7 @@ ${evidenceSummary}`;
     // Write verdict via reducer
     await conn.reducers.finalizeVerdict({
       sessionId,
+      idempotencyKey,
       decision: verdict,
       summary: synthesis,
     });

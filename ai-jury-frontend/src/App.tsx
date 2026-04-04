@@ -1,15 +1,96 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState } from 'react';
 import { SpacetimeDBProvider, useSpacetimeDB, useTable } from 'spacetimedb/react';
 import { DbConnection, tables } from './module_bindings';
+import type { Alert, Evidence, JurySession, Message, Verdict } from './module_bindings/types';
 
 const SERVER_URL = 'https://maincloud.spacetimedb.com';
 const DATABASE_NAME = 'ai-jury-board';
 const ORCHESTRATOR_URL = 'http://localhost:9000';
+const PHASE_FLOW = [
+  'DISCOVERY_PENDING',
+  'DISCOVERY_DONE',
+  'PROSECUTION_DONE',
+  'DEFENSE_DONE',
+  'DEVILS_ADVOCATE_DONE',
+  'SYNTHESIS_PENDING',
+  'COMPLETED',
+];
+
+type NoticeTone = 'info' | 'success' | 'error';
+type Notice = { tone: NoticeTone; message: string } | null;
+
+function toBigInt(value: unknown): bigint {
+  try {
+    if (typeof value === 'bigint') return value;
+    if (typeof value === 'number' && Number.isFinite(value)) return BigInt(Math.trunc(value));
+    if (typeof value === 'string' && value.trim()) return BigInt(value);
+  } catch {
+    // Fall through to default.
+  }
+
+  return 0n;
+}
+
+function toId(value: unknown): string {
+  return toBigInt(value).toString();
+}
+
+function compareBigIntAsc(a: bigint, b: bigint): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+function compareBigIntDesc(a: bigint, b: bigint): number {
+  if (a === b) return 0;
+  return a > b ? -1 : 1;
+}
+
+function formatLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function statusClass(status: string): string {
+  const normalized = status.toUpperCase();
+
+  if (normalized === 'DISCOVERY_PENDING') return 'chip-status-pending';
+  if (normalized === 'COMPLETED') return 'chip-status-complete';
+  if (normalized === 'FAILED') return 'chip-status-failed';
+  return 'chip-status-progress';
+}
+
+function roleClass(role: string): string {
+  const normalized = role.toUpperCase();
+
+  if (normalized === 'PROSECUTION') return 'chip-role-prosecution';
+  if (normalized === 'DEFENSE') return 'chip-role-defense';
+  if (normalized === 'DEVILS_ADVOCATE') return 'chip-role-devil';
+  return 'chip-neutral';
+}
+
+function severityClass(severity: string): string {
+  const normalized = severity.toUpperCase();
+
+  if (normalized === 'CRITICAL') return 'chip-sev-critical';
+  if (normalized === 'HIGH') return 'chip-sev-high';
+  if (normalized === 'MEDIUM') return 'chip-sev-medium';
+  if (normalized === 'LOW') return 'chip-sev-low';
+  return 'chip-neutral';
+}
+
+function phaseProgress(status: string): number {
+  const normalized = status.toUpperCase();
+  const index = PHASE_FLOW.findIndex((phase) => phase === normalized);
+  if (index < 0) return 0;
+  return ((index + 1) / PHASE_FLOW.length) * 100;
+}
 
 /**
- * Notify orchestrator about session changes
+ * Notify orchestrator about session changes.
  */
-async function notifyOrchestrator(session: any) {
+async function notifyOrchestrator(session: JurySession): Promise<void> {
   try {
     const payload = {
       id: session.id.toString(),
@@ -18,113 +99,331 @@ async function notifyOrchestrator(session: any) {
       currentTurn: session.currentTurn,
       roundNumber: session.roundNumber.toString(),
     };
-    
+
     const response = await fetch(`${ORCHESTRATOR_URL}/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    
-    if (response.ok) {
-      console.log('📨 Notified orchestrator:', payload);
-    } else {
-      console.warn('⚠️ Orchestrator notification failed:', response.status);
+
+    if (!response.ok) {
+      console.warn('Orchestrator notification failed:', response.status);
     }
-  } catch (e) {
-    console.warn('⚠️ Could not reach orchestrator:', e);
+  } catch (error) {
+    console.warn('Could not reach orchestrator:', error);
   }
 }
 
-function JurySessionList({ conn }: { conn: DbConnection }) {
-  const [sessions, isLoading] = useTable(tables.jurySession);
+function JuryWorkspace({ conn }: { conn: DbConnection }) {
+  const [sessions, sessionsLoading] = useTable(tables.jurySession);
+  const [messages, messagesLoading] = useTable(tables.message);
+  const [evidenceRows, evidenceLoading] = useTable(tables.evidence);
+  const [alerts, alertsLoading] = useTable(tables.alert);
+  const [verdicts, verdictsLoading] = useTable(tables.verdict);
+
   const [topic, setTopic] = useState('');
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
+
+  const sortedSessions = useMemo(() => {
+    const copy = [...sessions];
+    copy.sort((a, b) => compareBigIntDesc(toBigInt(a.id), toBigInt(b.id)));
+    return copy;
+  }, [sessions]);
+
+  const selectedSession = useMemo(() => {
+    if (sortedSessions.length === 0) return null;
+    if (!selectedSessionId) return sortedSessions[0] as JurySession;
+
+    const match = sortedSessions.find((session) => toId(session.id) === selectedSessionId);
+    return (match ?? sortedSessions[0]) as JurySession;
+  }, [selectedSessionId, sortedSessions]);
+
+  const activeSessionId = selectedSession ? toId(selectedSession.id) : null;
+
+  const sessionEvidence = useMemo(() => {
+    if (!activeSessionId) return [] as Evidence[];
+
+    const filtered = evidenceRows.filter((row) => toId(row.sessionId) === activeSessionId) as Evidence[];
+    filtered.sort((a, b) => compareBigIntAsc(toBigInt(a.id), toBigInt(b.id)));
+    return filtered;
+  }, [activeSessionId, evidenceRows]);
+
+  const sessionMessages = useMemo(() => {
+    if (!activeSessionId) return [] as Message[];
+
+    const filtered = messages.filter((row) => toId(row.sessionId) === activeSessionId) as Message[];
+    filtered.sort((a, b) => {
+      const roundComparison = compareBigIntAsc(toBigInt(a.roundNumber), toBigInt(b.roundNumber));
+      if (roundComparison !== 0) return roundComparison;
+      return compareBigIntAsc(toBigInt(a.id), toBigInt(b.id));
+    });
+    return filtered;
+  }, [activeSessionId, messages]);
+
+  const sessionAlerts = useMemo(() => {
+    if (!activeSessionId) return [] as Alert[];
+
+    const filtered = alerts.filter((row) => toId(row.sessionId) === activeSessionId) as Alert[];
+    filtered.sort((a, b) => compareBigIntAsc(toBigInt(a.id), toBigInt(b.id)));
+    return filtered;
+  }, [activeSessionId, alerts]);
+
+  const sessionVerdicts = useMemo(() => {
+    if (!activeSessionId) return [] as Verdict[];
+
+    const filtered = verdicts.filter((row) => toId(row.sessionId) === activeSessionId) as Verdict[];
+    filtered.sort((a, b) => compareBigIntDesc(toBigInt(a.id), toBigInt(b.id)));
+    return filtered;
+  }, [activeSessionId, verdicts]);
+
+  const streamLoading = sessionsLoading || messagesLoading || evidenceLoading || alertsLoading || verdictsLoading;
 
   const handleCreate = () => {
-    if (!topic.trim()) return;
+    const normalizedTopic = topic.trim();
+    if (!normalizedTopic) {
+      setNotice({ tone: 'info', message: 'Add a topic to create a session.' });
+      return;
+    }
+
     try {
-      conn.reducers.createSession({ topic, maxRounds: 6n });
+      conn.reducers.createSession({ topic: normalizedTopic, maxRounds: 6n });
       setTopic('');
-      console.log('✅ Create session called');
-      // Will update via subscription
+      setNotice({ tone: 'success', message: 'Session created. Select it and click Start Debate.' });
     } catch (error) {
-      console.error('❌ Create session error:', error);
+      setNotice({ tone: 'error', message: `Create session failed: ${String(error)}` });
     }
   };
 
-  const handleStart = (session: any) => {
+  const handleStart = (session: JurySession) => {
+    setSelectedSessionId(session.id.toString());
+
+    if (session.status.toUpperCase() !== 'DISCOVERY_PENDING') {
+      setNotice({
+        tone: 'info',
+        message: 'This session is already running. Open Debate Monitor to follow live updates.',
+      });
+      return;
+    }
+
     try {
       const sessionId = typeof session.id === 'bigint' ? session.id : BigInt(session.id);
-      console.log('🚀 Starting debate for session:', sessionId.toString());
       conn.reducers.startDebate({ sessionId });
-      console.log('✅ Start debate called');
-      // Notify orchestrator
-      setTimeout(() => notifyOrchestrator(session), 100);
+      setNotice({ tone: 'success', message: 'Debate start sent. Live events will stream below.' });
+      setTimeout(() => {
+        void notifyOrchestrator(session);
+      }, 100);
     } catch (error) {
-      console.error('❌ Start debate error:', error);
+      setNotice({ tone: 'error', message: `Start debate failed: ${String(error)}` });
     }
   };
 
+  const activeStatus = selectedSession?.status.toUpperCase() ?? 'DISCOVERY_PENDING';
+  const progressWidth = phaseProgress(activeStatus);
+
   return (
-    <div className="p-6 border rounded-lg bg-gray-50 shadow-sm mt-4">
-      <h2 className="text-xl font-bold mb-4">Jury Sessions</h2>
-
-      {isLoading && (
-        <div className="mb-4 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">
-          Syncing session subscription...
+    <section className="workspace-grid">
+      <aside className="panel session-panel">
+        <div className="panel-header">
+          <div>
+            <h2 className="panel-title">Session Queue</h2>
+            <p className="panel-subtitle">Create, start, and select sessions to inspect.</p>
+          </div>
+          <span className="chip chip-neutral">{sortedSessions.length} total</span>
         </div>
-      )}
-      
-      <div className="flex gap-2 mb-6">
-        <input 
-          className="border p-2 rounded flex-1" 
-          placeholder="Enter a new topic for debate..."
-          value={topic}
-          onChange={e => setTopic(e.target.value)}
-        />
-        <button onClick={handleCreate} className="bg-blue-600 text-white px-4 py-2 rounded font-semibold hover:bg-blue-700">
-          Create Session
-        </button>
-      </div>
 
-      <div className="space-y-4">
-        {sessions.length === 0 ? (
-          <p className="text-gray-500">No sessions yet.</p>
-        ) : (
-          sessions.map(s => {
-            console.log('Session:', { 
-              id: s.id.toString(), 
-              topic: s.topic,
-              status: s.status,
-              currentTurn: s.currentTurn,
-              roundNumber: s.roundNumber.toString()
-            });
-            return (
-            <div key={s.id.toString()} className="bg-white p-4 border rounded shadow-sm">
-              <div className="flex justify-between items-start">
-                <div>
-                  <h3 className="font-bold text-lg">{s.topic}</h3>
-                  <div className="text-sm text-gray-500 mt-1">
-                    Status: <span className="font-semibold uppercase text-indigo-600">{s.status}</span> | 
-                    Turn: <span className="font-semibold">{s.currentTurn}</span> | 
-                    Round: {s.roundNumber.toString()} / {s.maxRounds.toString()}
-                  </div>
-                </div>
-                <button 
-                  onClick={() => {
-                    console.log('🎯 Start Debate clicked for session:', s.id.toString());
-                    handleStart(s);
-                  }}
-                  className="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700"
+        {notice && <div className={`banner ${notice.tone}`}>{notice.message}</div>}
+
+        <div className="create-row">
+          <input
+            className="text-input"
+            placeholder="Debate topic, e.g. Should AI judges be advisory only?"
+            value={topic}
+            onChange={(event) => setTopic(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                handleCreate();
+              }
+            }}
+          />
+          <button onClick={handleCreate} className="btn btn-primary">
+            Create Session
+          </button>
+        </div>
+
+        {streamLoading && <div className="banner info">Syncing live tables from SpacetimeDB...</div>}
+
+        <div className="session-list">
+          {sortedSessions.length === 0 ? (
+            <div className="empty-state">No sessions yet. Create your first topic to begin.</div>
+          ) : (
+            sortedSessions.map((session) => {
+              const sessionKey = toId(session.id);
+              const isSelected = selectedSession ? toId(selectedSession.id) === sessionKey : false;
+              const canStart = session.status.toUpperCase() === 'DISCOVERY_PENDING';
+
+              return (
+                <article
+                  key={sessionKey}
+                  className={`session-card ${isSelected ? 'active' : ''}`}
+                  onClick={() => setSelectedSessionId(sessionKey)}
                 >
-                  Start Debate
-                </button>
+                  <div className="session-head">
+                    <h3 className="session-topic">{session.topic}</h3>
+                    <span className="session-id">#{sessionKey}</span>
+                  </div>
+
+                  <div className="chip-row">
+                    <span className={`chip ${statusClass(session.status)}`}>{formatLabel(session.status)}</span>
+                    <span className="chip chip-neutral">Turn {formatLabel(session.currentTurn)}</span>
+                    <span className="chip chip-neutral">
+                      Round {session.roundNumber.toString()} / {session.maxRounds.toString()}
+                    </span>
+                  </div>
+
+                  <div className="session-actions" onClick={(event) => event.stopPropagation()}>
+                    <button className="btn btn-ghost" onClick={() => setSelectedSessionId(sessionKey)}>
+                      View Debate
+                    </button>
+                    <button className="btn btn-success" onClick={() => handleStart(session)} disabled={!canStart}>
+                      {canStart ? 'Start Debate' : 'Debate Running'}
+                    </button>
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </div>
+      </aside>
+
+      <main className="panel detail-panel">
+        <div className="panel-header">
+          <div>
+            <h2 className="panel-title">Debate Monitor</h2>
+            <p className="panel-subtitle">
+              {selectedSession
+                ? `Session #${selectedSession.id.toString()} · ${selectedSession.topic}`
+                : 'Select a session to monitor evidence, arguments, fallacies, and final verdict.'}
+            </p>
+          </div>
+          <span className="chip chip-neutral">Realtime</span>
+        </div>
+
+        {!selectedSession ? (
+          <div className="empty-state">Choose a session from the left to open the debate monitor.</div>
+        ) : (
+          <>
+            <section className="phase-strip">
+              <div className="phase-track">
+                <div className="phase-fill" style={{ width: `${progressWidth}%` }} />
               </div>
-            </div>
-            );
-          })
+              <p className="phase-caption">
+                Current phase: <strong>{formatLabel(activeStatus)}</strong>
+              </p>
+            </section>
+
+            <section className="metric-grid">
+              <article className="metric-card">
+                <p className="metric-label">Evidence</p>
+                <p className="metric-value">{sessionEvidence.length}</p>
+              </article>
+              <article className="metric-card">
+                <p className="metric-label">Messages</p>
+                <p className="metric-value">{sessionMessages.length}</p>
+              </article>
+              <article className="metric-card">
+                <p className="metric-label">Alerts</p>
+                <p className="metric-value">{sessionAlerts.length}</p>
+              </article>
+              <article className="metric-card">
+                <p className="metric-label">Verdict</p>
+                <p className="metric-value">{sessionVerdicts.length > 0 ? 'Ready' : 'Pending'}</p>
+              </article>
+            </section>
+
+            <section className="section-block">
+              <h3 className="section-title">Evidence Snapshot</h3>
+              {sessionEvidence.length === 0 ? (
+                <div className="empty-state">Waiting for discovery evidence.</div>
+              ) : (
+                <div className="list-stack">
+                  {sessionEvidence.map((evidence) => (
+                    <article key={evidence.id.toString()} className="evidence-card">
+                      <h4 className="entry-title">{evidence.title}</h4>
+                      <p className="entry-content">{evidence.content}</p>
+                      <div className="entry-meta">
+                        <span>{evidence.source}</span>
+                        {evidence.url && (
+                          <a className="source-link" href={evidence.url} target="_blank" rel="noreferrer">
+                            Open Source
+                          </a>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="section-block">
+              <h3 className="section-title">Argument Timeline</h3>
+              {sessionMessages.length === 0 ? (
+                <div className="empty-state">No arguments posted yet.</div>
+              ) : (
+                <div className="list-stack">
+                  {sessionMessages.map((message) => (
+                    <article key={message.id.toString()} className="message-card">
+                      <div className="chip-row">
+                        <span className={`chip ${roleClass(message.role)}`}>{formatLabel(message.role)}</span>
+                        <span className="chip chip-neutral">Round {toBigInt(message.roundNumber).toString()}</span>
+                        <span className="chip chip-neutral">{formatLabel(message.messageStatus ?? 'DRAFT')}</span>
+                      </div>
+                      <p className="entry-content">{message.content}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="section-block">
+              <h3 className="section-title">Fallacy Alerts</h3>
+              {sessionAlerts.length === 0 ? (
+                <div className="empty-state">No fallacy alerts recorded yet.</div>
+              ) : (
+                <div className="list-stack">
+                  {sessionAlerts.map((alert) => (
+                    <article key={alert.id.toString()} className="alert-card">
+                      <div className="chip-row">
+                        <span className={`chip ${severityClass(alert.severity)}`}>{formatLabel(alert.severity)}</span>
+                        <span className="chip chip-neutral">{alert.source}</span>
+                        <span className="chip chip-neutral">
+                          Message #{alert.messageId ? alert.messageId.toString() : 'N/A'}
+                        </span>
+                      </div>
+                      <p className="entry-content">{alert.content}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="section-block">
+              <h3 className="section-title">Final Verdict</h3>
+              {sessionVerdicts.length === 0 ? (
+                <div className="empty-state">Verdict has not been finalized.</div>
+              ) : (
+                <article className="verdict-card">
+                  <h4 className="entry-title">Decision</h4>
+                  <p className="entry-content">{sessionVerdicts[0].decision}</p>
+                  <h4 className="entry-title">Summary</h4>
+                  <p className="entry-content">{sessionVerdicts[0].summary}</p>
+                </article>
+              )}
+            </section>
+          </>
         )}
-      </div>
-    </div>
+      </main>
+    </section>
   );
 }
 
@@ -135,27 +434,28 @@ function JuryRoom() {
   const connectionError = connectionState.connectionError?.message;
 
   return (
-    <div className="max-w-4xl mx-auto p-8 font-sans">
-      <h1 className="text-3xl font-black">AI Jury Room</h1>
-      <p className="text-gray-600 mb-8 mt-2">Local Frontend Testing Harness</p>
-
-      {connectionError && (
-        <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          Connection error: {connectionError}
+    <div className="app-shell">
+      <header className="hero-card">
+        <div>
+          <p className="eyebrow">Realtime Trial Intelligence</p>
+          <h1>AI Jury Room</h1>
+          <p className="subtitle">
+            Professional workspace for monitoring evidence, argument quality, and verdict synthesis in one flow.
+          </p>
         </div>
-      )}
+        <div className="connection-meta">
+          <p>Database</p>
+          <strong>{DATABASE_NAME}</strong>
+          <p className="mono">{identity ? `${identity.slice(0, 12)}...` : 'anonymous'}</p>
+        </div>
+      </header>
+
+      {connectionError && <div className="banner error">Connection error: {connectionError}</div>}
 
       {!connectionState.isActive || !conn ? (
-        <div className="bg-blue-50 text-blue-800 p-4 rounded-lg">Connecting to SpacetimeDB...</div>
+        <div className="panel connection-loading">Connecting to SpacetimeDB and initializing live feeds...</div>
       ) : (
-        <>
-          <div className="bg-green-50 text-green-800 p-4 rounded-lg mb-6 flex justify-between items-center">
-            <span>Connected to <b>{DATABASE_NAME}</b></span>
-            <span className="font-mono text-sm bg-white px-2 py-1 rounded">{identity ? `${identity.substring(0, 8)}...` : 'anonymous'}</span>
-          </div>
-
-          <JurySessionList conn={conn} />
-        </>
+        <JuryWorkspace conn={conn} />
       )}
     </div>
   );
@@ -174,4 +474,4 @@ function App() {
   );
 }
 
-export default App
+export default App;

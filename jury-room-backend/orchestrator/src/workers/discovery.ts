@@ -5,20 +5,22 @@
  * Writes evidence via ingestEvidence reducer
  */
 
-import { getConnection, SessionPhase, DebateSession } from '../spacetime.js';
+import { SESSION_PHASE } from '../constants.js';
+import { getConnection, DebateSession } from '../spacetime.js';
 import { searchTavily } from '../utils/apis.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
 
 export async function runDiscoveryWorker(intervalMs = 10000) {
   log('🔍', 'Discovery Worker started');
   let pollCount = 0;
+  const inFlightSessions = new Set<string>();
 
   while (true) {
     try {
       const conn = getConnection();
       
       // Poll for sessions in DISCOVERY_PENDING status
-      const sessions = await conn.db.jurySession.status.filter('DISCOVERY_PENDING');
+      const sessions = await conn.db.jurySession.status.filter(SESSION_PHASE.DISCOVERY_PENDING);
       
       pollCount++;
       if (pollCount % 3 === 0) {
@@ -30,7 +32,19 @@ export async function runDiscoveryWorker(intervalMs = 10000) {
       } else {
         log('🔍', `Found ${sessions.length} session(s) to process`);
         for (const session of sessions) {
-          await processDiscoverySession(conn, session as DebateSession);
+          const typedSession = session as DebateSession;
+          const sessionKey = typedSession.id.toString();
+
+          if (inFlightSessions.has(sessionKey)) {
+            continue;
+          }
+
+          inFlightSessions.add(sessionKey);
+          try {
+            await processDiscoverySession(conn, typedSession);
+          } finally {
+            inFlightSessions.delete(sessionKey);
+          }
         }
       }
 
@@ -53,32 +67,29 @@ async function processDiscoverySession(conn: any, session: DebateSession) {
     // Search for evidence on the topic
     const searchResults = await searchTavily(topic);
 
-    // Write evidence entries via reducer
-    for (const result of searchResults.results.slice(0, 5)) {
-      try {
-        await conn.reducers.ingestEvidence({
-          sessionId,
-          source: result.url || 'Unknown',
-          title: result.title,
-          content: result.content,
-          url: result.url,
-        });
-
-        logSuccess('🔍', `Ingested evidence: "${result.title}"`);
-      } catch (error) {
-        logError('DISCOVERY', `Failed to ingest evidence: ${error}`);
-      }
+    const bestResult = searchResults.results[0];
+    if (!bestResult) {
+      throw new Error('Tavily returned no evidence results');
     }
 
-    // Transition to discovery_done
-    await conn.reducers.startDebate({ sessionId });
-    logSuccess('🔍', `Session ${sessionId} transitioned to DISCOVERY_DONE`);
+    // ingestEvidence transitions DISCOVERY_PENDING -> DISCOVERY_DONE.
+    await conn.reducers.ingestEvidence({
+      sessionId,
+      idempotencyKey,
+      source: bestResult.url || 'Unknown',
+      title: bestResult.title || 'Evidence Snapshot',
+      content: bestResult.content || 'No content provided',
+      url: bestResult.url,
+    });
+
+    logSuccess('🔍', `Ingested evidence and advanced session ${sessionId} to DISCOVERY_DONE`);
 
     await writeAuditLog({
       worker: 'discovery',
       sessionId: sessionId.toString(),
       topic,
       evidenceCount: searchResults.results.length,
+      selectedEvidenceTitle: bestResult.title,
       status: 'completed',
       idempotencyKey,
     });

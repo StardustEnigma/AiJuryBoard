@@ -1,10 +1,11 @@
 /**
  * Devil's Advocate Worker
  * Polls for DEFENSE_DONE status
- * Calls Claude as pragmatist/skeptic
+ * Calls LLM as pragmatist/skeptic
  * Writes message via postArgument reducer
  */
 
+import { JURY_ROLE, SESSION_PHASE, SESSION_TURN, toCanonicalRole } from '../constants.js';
 import { getConnection, DebateSession, Message } from '../spacetime.js';
 import { callLlamaLarge } from '../utils/apis.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
@@ -27,13 +28,13 @@ export async function runDevilsAdvocateWorker(intervalMs = 20000) {
       const conn = getConnection();
       
       // Poll for sessions where defense just finished
-      const sessions = await conn.db.jurySession.currentTurn.filter('DEVILS_ADVOCATE');
+      const sessions = await conn.db.jurySession.currentTurn.filter(SESSION_TURN.DEVILS_ADVOCATE);
       
       if (sessions.length > 0) {
         for (const session of sessions) {
           const s = session as DebateSession;
           const roundNum = typeof s.roundNumber === 'string' ? BigInt(s.roundNumber) : s.roundNumber;
-          if (s.status === 'DEFENSE_DONE' && roundNum > 0n) {
+          if (s.status === SESSION_PHASE.DEFENSE_DONE && roundNum > 0n) {
             await processDevilsAdvocateSession(conn, s);
           }
         }
@@ -57,21 +58,28 @@ async function processDevilsAdvocateSession(conn: any, session: DebateSession) {
 
     // Fetch both prosecution and defense messages
     const messages = await conn.db.message.sessionId.filter(sessionId);
-    const prosecutionMsg = messages.find((m: Message) => m.role === 'prosecution');
-    const defenseMsg = messages.find((m: Message) => m.role === 'defense');
+    const prosecutionMsg = messages.find(
+      (m: Message) => toCanonicalRole(m.role) === JURY_ROLE.PROSECUTION
+    );
+    const defenseMsg = messages.find(
+      (m: Message) => toCanonicalRole(m.role) === JURY_ROLE.DEFENSE
+    );
 
     const prosecutionContext = prosecutionMsg ? `PROSECUTION:\n${prosecutionMsg.content}\n\n` : '';
     const defenseContext = defenseMsg ? `DEFENSE:\n${defenseMsg.content}\n\n` : '';
 
     const systemPrompt = `${DEVILS_ADVOCATE_PROMPT}\n\n${prosecutionContext}${defenseContext}Generate your critique now.`;
-    const critiqe = await callLlamaLarge(systemPrompt);
+    const critique = await callLlamaLarge(systemPrompt);
 
     // Write via reducer
     await conn.reducers.postArgument({
       sessionId,
-      role: 'devil_advocate',
-      content: critiqe,
+      idempotencyKey,
+      role: JURY_ROLE.DEVILS_ADVOCATE,
+      content: critique,
     });
+
+    await conn.reducers.markAnalyzing({ sessionId });
 
     logSuccess('😈', `Devil's advocate critique posted for session ${sessionId}`);
 

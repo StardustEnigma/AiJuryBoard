@@ -1,0 +1,32 @@
+export const SESSION_PHASE = {
+  DISCOVERY_PENDING: 'DISCOVERY_PENDING',
+  DISCOVERY_DONE: 'DISCOVERY_DONE',
+  PROSECUTION_DONE: 'PROSECUTION_DONE',
+  DEFENSE_DONE: 'DEFENSE_DONE',
+  DEVILS_ADVOCATE_DONE: 'DEVILS_ADVOCATE_DONE',
+  SYNTHESIS_PENDING: 'SYNTHESIS_PENDING',
+  COMPLETED: 'COMPLETED',
+  FAILED: 'FAILED',
+} as const;
+
+export const SESSION_TURN = {
+  PROSECUTION: 'PROSECUTION',
+  DEFENSE: 'DEFENSE',
+  DEVILS_ADVOCATE: 'DEVILS_ADVOCATE',
+  ANALYZING: 'ANALYZING',
+  SYNTHESIS: 'SYNTHESIS',
+} as const;
+
+export const JURY_ROLE = {
+  PROSECUTION: 'PROSECUTION',
+  DEFENSE: 'DEFENSE',
+  DEVILS_ADVOCATE: 'DEVILS_ADVOCATE',
+} as const;
+
+export function toCanonicalRole(value: string): string {
+  return String(value)
+    .trim()
+    .toUpperCase()
+    .replace(/[\u2019']/g, '')
+    .replace(/[\s-]+/g, '_');
+}

@@ -107,11 +107,11 @@ export async function callLlama(prompt: string): Promise<string> {
 }
 
 export async function callMixtral(prompt: string): Promise<string> {
-  const model = 'mixtral-8x7b-32768';
-  return callGroqModel(prompt, model, '🔀', 'Mixtral');
+  const model = process.env.ARGUMENT_MODEL || process.env.MIXTRAL_MODEL || 'llama-3.3-70b-versatile';
+  return callGroqModel(prompt, model, '🔀', 'Argument-LLM');
 }
 
 export async function callLlamaLarge(prompt: string): Promise<string> {
-  const model = 'llama-3.1-70b-versatile';
+  const model = process.env.LLAMA_LARGE_MODEL || 'llama-3.3-70b-versatile';
   return callGroqModel(prompt, model, '🦙', 'Llama-70B');
 }
