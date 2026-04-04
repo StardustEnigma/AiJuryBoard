@@ -16,6 +16,7 @@ export async function runDiscoveryWorker(intervalMs = 10000) {
   log('🔍', 'Discovery Worker started');
   let pollCount = 0;
   const inFlightSessions = new Set<string>();
+  const completedSessions = new Set<string>();
 
   while (true) {
     try {
@@ -41,9 +42,16 @@ export async function runDiscoveryWorker(intervalMs = 10000) {
             continue;
           }
 
+          if (completedSessions.has(sessionKey)) {
+            continue;
+          }
+
           inFlightSessions.add(sessionKey);
           try {
-            await processDiscoverySession(conn, typedSession);
+            const completed = await processDiscoverySession(conn, typedSession);
+            if (completed) {
+              completedSessions.add(sessionKey);
+            }
           } finally {
             inFlightSessions.delete(sessionKey);
           }
@@ -61,10 +69,22 @@ export async function runDiscoveryWorker(intervalMs = 10000) {
 async function processDiscoverySession(conn: any, session: DebateSession) {
   const sessionId = session.id;
   const topic = session.topic;
-  const idempotencyKey = generateIdempotencyKey(`discovery-${sessionId}`);
+  const idempotencyKey = generateIdempotencyKey(`discovery-${sessionId}-snapshot`);
 
   try {
     log('🔍', `Processing session ${sessionId}: "${topic}"`);
+
+    const status = String(session.status || '').toUpperCase();
+    if (status !== SESSION_PHASE.DISCOVERY_PENDING) {
+      log('🔍', `Skipping session ${sessionId}; status moved to ${status}`);
+      return true;
+    }
+
+    const existingEvidence = await conn.db.evidence.sessionId.filter(sessionId);
+    if (existingEvidence.length > 0) {
+      log('🔍', `Skipping session ${sessionId}; evidence already ingested`);
+      return true;
+    }
 
     const topicCheck = gateSearchTopic(topic);
     if (!topicCheck.allowed) {
@@ -78,7 +98,7 @@ async function processDiscoverySession(conn: any, session: DebateSession) {
         policyWarnings: topicCheck.warnings,
         idempotencyKey,
       });
-      return;
+      return true;
     }
 
     const safeTopic = topicCheck.sanitizedText;
@@ -129,6 +149,7 @@ async function processDiscoverySession(conn: any, session: DebateSession) {
       status: 'completed',
       idempotencyKey,
     });
+    return true;
   } catch (error) {
     logError('DISCOVERY', `Failed to process session ${sessionId}: ${error}`);
     
@@ -139,5 +160,6 @@ async function processDiscoverySession(conn: any, session: DebateSession) {
       error: String(error),
       idempotencyKey,
     });
+    return false;
   }
 }

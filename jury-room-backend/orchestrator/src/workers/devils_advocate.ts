@@ -11,6 +11,13 @@ import { callLlamaLarge, clampToWords } from '../utils/apis.js';
 import { gateGeneratedArgument } from '../utils/policy.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
 
+function asBigInt(value: bigint | string | number | undefined): bigint {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return BigInt(Math.trunc(value));
+  if (typeof value === 'string' && value.trim()) return BigInt(value);
+  return 0n;
+}
+
 const DEVILS_ADVOCATE_PROMPT = `You are the Devil's Advocate.
 Do not take sides. Use simple language.
 
@@ -30,6 +37,7 @@ Limit: 90 to 120 words total.`;
 
 export async function runDevilsAdvocateWorker(intervalMs = 20000) {
   log('😈', "Devil's Advocate Worker started");
+  const completedStages = new Set<string>();
 
   while (true) {
     try {
@@ -42,8 +50,17 @@ export async function runDevilsAdvocateWorker(intervalMs = 20000) {
         for (const session of sessions) {
           const s = session as DebateSession;
           const roundNum = typeof s.roundNumber === 'string' ? BigInt(s.roundNumber) : s.roundNumber;
+          const stageKey = `${s.id.toString()}:DEVILS_ADVOCATE:${roundNum.toString()}`;
+
+          if (completedStages.has(stageKey)) {
+            continue;
+          }
+
           if (s.status === SESSION_PHASE.DEFENSE_DONE && roundNum > 0n) {
-            await processDevilsAdvocateSession(conn, s);
+            const completed = await processDevilsAdvocateSession(conn, s);
+            if (completed) {
+              completedStages.add(stageKey);
+            }
           }
         }
       }
@@ -58,25 +75,44 @@ export async function runDevilsAdvocateWorker(intervalMs = 20000) {
 
 async function processDevilsAdvocateSession(conn: any, session: DebateSession) {
   const sessionId = session.id;
-  const roundNumber = session.roundNumber;
-  const idempotencyKey = generateIdempotencyKey(`devils_advocate-${sessionId}`);
+  const roundNumber = asBigInt(session.roundNumber);
+  const idempotencyKey = generateIdempotencyKey(`devils_advocate-${sessionId}-${roundNumber.toString()}`);
+  const topic = session.topic?.trim() || 'the current topic';
 
   try {
     log('😈', `Processing devil's advocate for session ${sessionId}, round ${roundNumber}`);
 
     // Fetch both prosecution and defense messages
     const messages = await conn.db.message.sessionId.filter(sessionId);
-    const prosecutionMsg = messages.find(
-      (m: Message) => toCanonicalRole(m.role) === JURY_ROLE.PROSECUTION
+    const existingDevilsAdvocate = messages.find(
+      (m: Message) => toCanonicalRole(m.role) === JURY_ROLE.DEVILS_ADVOCATE
     );
-    const defenseMsg = messages.find(
-      (m: Message) => toCanonicalRole(m.role) === JURY_ROLE.DEFENSE
-    );
+    if (existingDevilsAdvocate) {
+      log('😈', `Skipping session ${sessionId}; devil's advocate argument already exists`);
+      return true;
+    }
+
+    const prosecutionMsg = messages
+      .filter(
+        (m: Message) =>
+          toCanonicalRole(m.role) === JURY_ROLE.PROSECUTION &&
+          asBigInt(m.roundNumber) === roundNumber
+      )
+      .sort((a: Message, b: Message) => (asBigInt(a.id) < asBigInt(b.id) ? -1 : 1))
+      .at(-1);
+    const defenseMsg = messages
+      .filter(
+        (m: Message) =>
+          toCanonicalRole(m.role) === JURY_ROLE.DEFENSE &&
+          asBigInt(m.roundNumber) === roundNumber
+      )
+      .sort((a: Message, b: Message) => (asBigInt(a.id) < asBigInt(b.id) ? -1 : 1))
+      .at(-1);
 
     const prosecutionContext = prosecutionMsg ? `PROSECUTION:\n${prosecutionMsg.content}\n\n` : '';
     const defenseContext = defenseMsg ? `DEFENSE:\n${defenseMsg.content}\n\n` : '';
 
-    const systemPrompt = `${DEVILS_ADVOCATE_PROMPT}\n\n${prosecutionContext}${defenseContext}Generate your critique now.`;
+    const systemPrompt = `${DEVILS_ADVOCATE_PROMPT}\n\nTopic: ${topic}\n\n${prosecutionContext}${defenseContext}Generate your critique now.`;
     const critiqueRaw = await callLlamaLarge(systemPrompt);
     const policyCheck = gateGeneratedArgument(JURY_ROLE.DEVILS_ADVOCATE, critiqueRaw, 120);
     if (policyCheck.warnings.length > 0) {
@@ -106,7 +142,9 @@ async function processDevilsAdvocateSession(conn: any, session: DebateSession) {
       idempotencyKey,
       success: true,
     });
+    return true;
   } catch (error) {
     logError('DEVILS_ADVOCATE', `Failed to process session ${sessionId}: ${error}`);
+    return false;
   }
 }

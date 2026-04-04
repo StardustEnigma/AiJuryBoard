@@ -66,6 +66,7 @@ export enum SessionPhase {
 export let jurySessionCache: DebateSession[] = [];
 export let messageCache: Message[] = [];
 export let evidenceCache: Evidence[] = [];
+export let verdictCache: Verdict[] = [];
 
 let connection: any = null;
 let reducerConnection: any = null;
@@ -226,6 +227,16 @@ function mapEvidenceRow(row: any): Evidence {
   };
 }
 
+function mapVerdictRow(row: any): Verdict {
+  return {
+    id: toBigInt(row.id),
+    sessionId: toBigInt(row.session_id ?? row.sessionId),
+    decision: String(row.decision ?? ''),
+    summary: String(row.summary ?? ''),
+    createdAt: row.created_at ?? row.createdAt,
+  };
+}
+
 async function queryRows(endpoint: string, query: string): Promise<any[] | null> {
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -257,10 +268,12 @@ function syncCachesFromSdkConnection(sdkConn: any): void {
   const sessionRows = readTableRows(sdkConn?.db?.jurySession);
   const messageRows = readTableRows(sdkConn?.db?.message);
   const evidenceRows = readTableRows(sdkConn?.db?.evidence);
+  const verdictRows = readTableRows(sdkConn?.db?.verdict);
 
   jurySessionCache = sessionRows.map(mapSessionRow);
   messageCache = messageRows.map(mapMessageRow);
   evidenceCache = evidenceRows.map(mapEvidenceRow);
+  verdictCache = verdictRows.map(mapVerdictRow);
 }
 
 function startSdkSync(sdkConn: any): boolean {
@@ -270,7 +283,7 @@ function startSdkSync(sdkConn: any): boolean {
       .onApplied(() => {
         syncCachesFromSdkConnection(sdkConn);
         console.log(
-          `✅ SDK sync applied: ${jurySessionCache.length} sessions, ${messageCache.length} messages, ${evidenceCache.length} evidence rows`
+          `✅ SDK sync applied: ${jurySessionCache.length} sessions, ${messageCache.length} messages, ${evidenceCache.length} evidence rows, ${verdictCache.length} verdicts`
         );
       })
       .onError((_ctx: any) => {
@@ -373,6 +386,17 @@ export async function initSpacetimeDB(): Promise<any> {
             });
           }
         }
+      },
+      verdict: {
+        sessionId: {
+          filter: async (id: bigint | string) => {
+            const idVal = toBigInt(id, -1n);
+            return verdictCache.filter(v => {
+              const vId = toBigInt(v.sessionId, -1n);
+              return vId === idVal;
+            });
+          }
+        }
       }
     },
     reducers: {
@@ -421,6 +445,7 @@ function startSync(uri: string, dbName: string) {
 
         const messageRows = await queryRows(endpoint, 'SELECT * FROM message');
         const evidenceRows = await queryRows(endpoint, 'SELECT * FROM evidence');
+        const verdictRows = await queryRows(endpoint, 'SELECT * FROM verdict');
 
         jurySessionCache = sessionRows.map(mapSessionRow);
         if (messageRows) {
@@ -429,9 +454,12 @@ function startSync(uri: string, dbName: string) {
         if (evidenceRows) {
           evidenceCache = evidenceRows.map(mapEvidenceRow);
         }
+        if (verdictRows) {
+          verdictCache = verdictRows.map(mapVerdictRow);
+        }
 
         console.log(
-          `✅ Synced ${jurySessionCache.length} sessions, ${messageCache.length} messages, ${evidenceCache.length} evidence rows from ${endpoint}`
+          `✅ Synced ${jurySessionCache.length} sessions, ${messageCache.length} messages, ${evidenceCache.length} evidence rows, ${verdictCache.length} verdicts from ${endpoint}`
         );
 
         return true;

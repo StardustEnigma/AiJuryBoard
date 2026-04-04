@@ -43,6 +43,12 @@ export async function runFallacyWorker(intervalMs = 10000) {
       const allMessages = await conn.db.message.iter();
 
       if (!bootstrapped) {
+        if ((allMessages as Message[]).length === 0) {
+          log('🔎', 'Bootstrap waiting for message cache sync...');
+          await new Promise((resolve) => setTimeout(resolve, intervalMs));
+          continue;
+        }
+
         for (const message of allMessages as Message[]) {
           processedMessages.add(message.id.toString());
         }

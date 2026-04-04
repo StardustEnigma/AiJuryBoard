@@ -5,14 +5,12 @@ import {
   EXPECTED_ROLE_BY_PHASE,
   JURY_ROLE,
   MESSAGE_STATUS,
-  NEXT_PHASE_BY_ROLE,
   OPENING_ROLE,
   SESSION_PHASE,
   canAdvanceMessageStatus,
   isTerminalPhase,
   isValidMessageStatus,
   normalizeText,
-  roundForRole,
   toCanonicalRole,
 } from './lib';
 import spacetimedb from './schema';
@@ -59,18 +57,40 @@ function findMessageByIdempotencyKey(ctx: JuryReducerCtx, idempotencyKey: string
   return firstOrUndefined(ctx.db.message.message_idempotency_key.filter(idempotencyKey));
 }
 
-function findVerdictByIdempotencyKey(ctx: JuryReducerCtx, idempotencyKey: string) {
-  return firstOrUndefined(ctx.db.verdict.verdict_idempotency_key.filter(idempotencyKey));
+function toBigInt(value: unknown): bigint {
+  if (typeof value === 'bigint') {
+    return value;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return BigInt(Math.trunc(value));
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    return BigInt(value);
+  }
+
+  throw new SenderError('Invalid numeric value in session state');
 }
 
-function nextTurnAfterRole(role: (typeof JURY_ROLE)[keyof typeof JURY_ROLE]): string {
-  if (role === JURY_ROLE.PROSECUTION) {
-    return JURY_ROLE.DEFENSE;
+function findMessageBySessionRoleAndRound(
+  ctx: JuryReducerCtx,
+  sessionId: bigint,
+  role: (typeof JURY_ROLE)[keyof typeof JURY_ROLE],
+  roundNumber: bigint
+) {
+  for (const row of ctx.db.message.message_session_id.filter(sessionId)) {
+    const typed = row as any;
+    if (toCanonicalRole(typed.role) === role && toBigInt(typed.roundNumber) === roundNumber) {
+      return row;
+    }
   }
-  if (role === JURY_ROLE.DEFENSE) {
-    return JURY_ROLE.DEVILS_ADVOCATE;
-  }
-  return 'ANALYZING';
+
+  return undefined;
+}
+
+function findVerdictByIdempotencyKey(ctx: JuryReducerCtx, idempotencyKey: string) {
+  return firstOrUndefined(ctx.db.verdict.verdict_idempotency_key.filter(idempotencyKey));
 }
 
 export default spacetimedb;
@@ -212,6 +232,25 @@ export const postArgument = spacetimedb.reducer(
     }
 
     const session = requireSession(ctx, sessionId);
+    const canonicalRole = toCanonicalRole(role);
+    if (!canonicalRole) {
+      throw new SenderError('Invalid role, expected PROSECUTION, DEFENSE, or DEVILS_ADVOCATE');
+    }
+
+    const currentRound = toBigInt(session.roundNumber);
+    const maxRounds = toBigInt(session.maxRounds ?? DEFAULT_MAX_ROUNDS);
+    const messageRound = canonicalRole === JURY_ROLE.DEVILS_ADVOCATE ? currentRound + 1n : currentRound;
+
+    const existingRoleMessage = findMessageBySessionRoleAndRound(
+      ctx,
+      sessionId,
+      canonicalRole,
+      messageRound
+    ) as any | undefined;
+    if (existingRoleMessage) {
+      return;
+    }
+
     if (isTerminalPhase(session.status)) {
       throw new SenderError('Session is terminal');
     }
@@ -219,11 +258,6 @@ export const postArgument = spacetimedb.reducer(
     const expectedRole = EXPECTED_ROLE_BY_PHASE[session.status as keyof typeof EXPECTED_ROLE_BY_PHASE];
     if (!expectedRole) {
       throw new SenderError(`Session phase ${session.status} does not accept debate messages`);
-    }
-
-    const canonicalRole = toCanonicalRole(role);
-    if (!canonicalRole) {
-      throw new SenderError('Invalid role, expected PROSECUTION, DEFENSE, or DEVILS_ADVOCATE');
     }
 
     if (canonicalRole !== expectedRole) {
@@ -248,15 +282,36 @@ export const postArgument = spacetimedb.reducer(
       messageStatus: MESSAGE_STATUS.DRAFT,
       sender: ctx.sender,
       content: normalizedContent,
-      roundNumber: roundForRole(canonicalRole),
+      roundNumber: messageRound,
       createdAt: ctx.timestamp,
     });
 
+    let nextStatus = session.status;
+    let nextTurn = session.currentTurn;
+    let nextRound = currentRound;
+
+    if (canonicalRole === JURY_ROLE.PROSECUTION) {
+      nextStatus = SESSION_PHASE.PROSECUTION_DONE;
+      nextTurn = JURY_ROLE.DEFENSE;
+    } else if (canonicalRole === JURY_ROLE.DEFENSE) {
+      if (currentRound < maxRounds) {
+        nextStatus = SESSION_PHASE.DISCOVERY_DONE;
+        nextTurn = JURY_ROLE.PROSECUTION;
+        nextRound = currentRound + 1n;
+      } else {
+        nextStatus = SESSION_PHASE.DEFENSE_DONE;
+        nextTurn = JURY_ROLE.DEVILS_ADVOCATE;
+      }
+    } else {
+      nextStatus = SESSION_PHASE.DEVILS_ADVOCATE_DONE;
+      nextTurn = 'ANALYZING';
+    }
+
     ctx.db.jurySession.id.update({
       ...session,
-      status: NEXT_PHASE_BY_ROLE[canonicalRole],
-      currentTurn: nextTurnAfterRole(canonicalRole),
-      roundNumber: roundForRole(canonicalRole),
+      status: nextStatus,
+      currentTurn: nextTurn,
+      roundNumber: nextRound,
       updatedAt: ctx.timestamp,
     });
   }

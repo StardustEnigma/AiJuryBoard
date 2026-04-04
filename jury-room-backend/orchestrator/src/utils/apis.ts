@@ -6,7 +6,7 @@
 import { log, logError, logSuccess, retry } from './logger.js';
 
 function useMockApis(): boolean {
-  return (process.env.ALLOW_MOCK_APIS || 'true').toLowerCase() !== 'false';
+  return (process.env.ALLOW_MOCK_APIS || 'false').toLowerCase() === 'true';
 }
 
 function normalizeTopicForMock(query: string): string {
@@ -22,15 +22,27 @@ function isCounterViewQuery(query: string): boolean {
 }
 
 function extractTopicFromPrompt(prompt: string): string {
-  const topicMatch = prompt.match(/Topic:\s*([^\n]+)/i);
+  const topicMatch = prompt.match(/(?:^|\n)\s*Topic:\s*([^\n]+)/i);
   if (topicMatch?.[1]) {
     return topicMatch[1].trim();
+  }
+
+  const evidenceTopicMatch = prompt.match(/evidence[^\n]*:\s*[\s\S]*?Topic:\s*([^\n]+)/i);
+  if (evidenceTopicMatch?.[1]) {
+    return evidenceTopicMatch[1].trim();
   }
 
   const quoted = prompt.match(/"([^"]{3,120})"/);
   if (quoted?.[1]) {
     return quoted[1].trim();
   }
+
+  const aboutMatch = prompt.match(/\b(?:about|on)\s+([a-z0-9 ,.'-]{3,120})/i);
+  if (aboutMatch?.[1]) {
+    return aboutMatch[1].trim();
+  }
+
+  log('🧪', 'Mock topic extraction fallback used');
 
   return 'the topic';
 }
@@ -157,13 +169,38 @@ function mockGroqResponse(prompt: string): string {
   }
 
   if (normalizedPrompt.includes('prosecution_summary:') && normalizedPrompt.includes('verdict:')) {
+    const summaryVariants = [
+      {
+        prosecution: `Prosecution argues ${topic} requires timely action backed by monitoring and accountability controls.`,
+        defense: `Defense argues that on ${topic}, evidence quality varies and rushed rollout can create avoidable harms.`,
+        analysis: `Both sides rely on assumptions about implementation quality in ${topic} that are not fully stress-tested.`,
+        disagreement: `They disagree on speed, intervention strength, and acceptable short-term risk for ${topic}.`,
+        verdict: `For ${topic}, a phased rollout with public checkpoints is stronger than immediate maximal action.`,
+      },
+      {
+        prosecution: `Prosecution frames ${topic} as an escalating problem with compounding costs if action is delayed.`,
+        defense: `Defense argues policy on ${topic} should start with pilots because broad mandates can overreach in edge cases.`,
+        analysis: `The strongest gap is weak quantification of upside and downside scenarios for ${topic}.`,
+        disagreement: `Disagreement centers on whether precaution means moving now or waiting for cleaner evidence on ${topic}.`,
+        verdict: `On ${topic}, targeted pilots with independent audits should come before full-scale enforcement.`,
+      },
+      {
+        prosecution: `Prosecution says the evidence on ${topic} is sufficient to justify immediate but bounded intervention.`,
+        defense: `Defense says findings on ${topic} are mixed and implementation errors could damage trust.`,
+        analysis: `Both sides under-specify rollback triggers and operational safeguards for ${topic}.`,
+        disagreement: `They remain divided on timeline, scope, and tolerance for policy reversals in ${topic}.`,
+        verdict: `For ${topic}, choose incremental action with measurable milestones and explicit rollback thresholds.`,
+      },
+    ];
+    const selected = summaryVariants[hashText(topic) % summaryVariants.length];
+
     return [
-      'PROSECUTION_SUMMARY: Prosecution argues action is needed to reduce harm and improve accountability.',
-      'DEFENSE_SUMMARY: Defense argues evidence is mixed and policy may create side effects if rushed.',
-      'DEVIL_ADVOCATE_ANALYSIS: Key assumptions on both sides need stronger validation and edge-case testing.',
-      'SHARED_REALITY: Both sides accept the issue is real and decisions should be evidence-led.',
-      'REMAINING_DISAGREEMENT: Disagreement remains on urgency, intervention strength, and acceptable risk.',
-      'VERDICT: A phased approach with safeguards is stronger than immediate maximal action.',
+      `PROSECUTION_SUMMARY: ${selected.prosecution}`,
+      `DEFENSE_SUMMARY: ${selected.defense}`,
+      `DEVIL_ADVOCATE_ANALYSIS: ${selected.analysis}`,
+      `SHARED_REALITY: Both sides accept ${topic} is real and decisions should be evidence-led.`,
+      `REMAINING_DISAGREEMENT: ${selected.disagreement}`,
+      `VERDICT: ${selected.verdict}`,
     ].join('\n');
   }
 

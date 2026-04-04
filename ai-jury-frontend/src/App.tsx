@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { SpacetimeDBProvider, useSpacetimeDB, useTable } from 'spacetimedb/react';
 import { DbConnection, tables } from './module_bindings';
 import type { Alert, Evidence, JurySession, Message, Verdict } from './module_bindings/types';
@@ -279,12 +279,31 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
     return copy;
   }, [sessions]);
 
+  useEffect(() => {
+    if (sortedSessions.length === 0) {
+      if (selectedSessionId !== null) {
+        setSelectedSessionId(null);
+      }
+      return;
+    }
+
+    if (!selectedSessionId) {
+      setSelectedSessionId(toId(sortedSessions[0].id));
+      return;
+    }
+
+    const exists = sortedSessions.some((session) => toId(session.id) === selectedSessionId);
+    if (!exists) {
+      console.warn('Selected session no longer exists; switched to newest session.');
+      setSelectedSessionId(toId(sortedSessions[0].id));
+    }
+  }, [selectedSessionId, sortedSessions]);
+
   const selectedSession = useMemo(() => {
-    if (sortedSessions.length === 0) return null;
-    if (!selectedSessionId) return sortedSessions[0] as JurySession;
+    if (!selectedSessionId) return null;
 
     const match = sortedSessions.find((session) => toId(session.id) === selectedSessionId);
-    return (match ?? sortedSessions[0]) as JurySession;
+    return (match ?? null) as JurySession | null;
   }, [selectedSessionId, sortedSessions]);
 
   const activeSessionId = selectedSession ? toId(selectedSession.id) : null;
@@ -350,9 +369,9 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
     }
 
     try {
-      conn.reducers.createSession({ topic: normalizedTopic, maxRounds: 6n });
+      conn.reducers.createSession({ topic: normalizedTopic, maxRounds: 2n });
       setTopic('');
-      setNotice({ tone: 'success', message: 'Session created. Select it and click Start Debate.' });
+      setNotice({ tone: 'success', message: 'Session created with 2 rounds. Select it and click Start Debate.' });
     } catch (error) {
       setNotice({ tone: 'error', message: `Create session failed: ${String(error)}` });
     }

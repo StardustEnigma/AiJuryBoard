@@ -56,6 +56,7 @@ Limit: 100 to 130 words total.`;
 
 export async function runSynthesisWorker(intervalMs = 30000) {
   log('✨', 'Synthesis Worker started');
+  const completedStages = new Set<string>();
 
   while (true) {
     try {
@@ -66,7 +67,16 @@ export async function runSynthesisWorker(intervalMs = 30000) {
       
       if (sessions.length > 0) {
         for (const session of sessions) {
-          await processSynthesisSession(conn, session as DebateSession);
+          const typed = session as DebateSession;
+          const stageKey = `${typed.id.toString()}:SYNTHESIS:${typed.roundNumber.toString()}`;
+          if (completedStages.has(stageKey)) {
+            continue;
+          }
+
+          const completed = await processSynthesisSession(conn, typed);
+          if (completed) {
+            completedStages.add(stageKey);
+          }
         }
       }
 
@@ -80,10 +90,19 @@ export async function runSynthesisWorker(intervalMs = 30000) {
 
 async function processSynthesisSession(conn: any, session: DebateSession) {
   const sessionId = session.id;
-  const idempotencyKey = generateIdempotencyKey(`synthesis-${sessionId}`);
+  const idempotencyKey = generateIdempotencyKey(`synthesis-${sessionId}-${session.roundNumber.toString()}`);
+  const topic = session.topic?.trim() || 'the current topic';
 
   try {
     log('✨', `Processing synthesis for session ${sessionId}`);
+
+    const existingVerdicts = conn.db.verdict?.sessionId
+      ? await conn.db.verdict.sessionId.filter(sessionId)
+      : [];
+    if (existingVerdicts.length > 0) {
+      log('✨', `Skipping session ${sessionId}; verdict already exists`);
+      return true;
+    }
 
     // Fetch all messages and evidence
     const messages = await conn.db.message.sessionId.filter(sessionId);
@@ -91,7 +110,7 @@ async function processSynthesisSession(conn: any, session: DebateSession) {
 
     if (messages.length === 0) {
       logError('SYNTHESIS', `No messages found for session ${sessionId}`);
-      return;
+      return false;
     }
 
     // Build debate summary
@@ -107,6 +126,9 @@ async function processSynthesisSession(conn: any, session: DebateSession) {
       .join('\n');
 
     const synthesisPrompt = `${SYNTHESIS_PROMPT}
+
+  TOPIC:
+  ${topic}
 
 DEBATE SUMMARY:
 ${debateSummary}
@@ -164,6 +186,7 @@ ${evidenceSummary}`;
       status: 'completed',
       idempotencyKey,
     });
+    return true;
   } catch (error) {
     logError('SYNTHESIS', `Failed to process session ${sessionId}: ${error}`);
     
@@ -174,5 +197,6 @@ ${evidenceSummary}`;
       error: String(error),
       idempotencyKey,
     });
+    return false;
   }
 }

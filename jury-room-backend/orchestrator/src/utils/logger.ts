@@ -4,6 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'node:crypto';
 
 export function log(prefix: string, message: string) {
   const timestamp = new Date().toISOString();
@@ -45,7 +46,14 @@ export async function retry<T>(
 }
 
 export function generateIdempotencyKey(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+  const normalized = prefix
+    .toLowerCase()
+    .replace(/[^a-z0-9:_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  const digest = createHash('sha1').update(normalized).digest('hex').slice(0, 12);
+  return `${normalized}-${digest}`;
 }
 
 export async function writeAuditLog(entry: Record<string, unknown>) {
