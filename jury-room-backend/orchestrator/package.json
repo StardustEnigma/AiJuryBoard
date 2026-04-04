@@ -1,0 +1,32 @@
+{
+  "name": "ai-jury-orchestrator",
+  "version": "1.0.0",
+  "description": "Node.js orchestrator for AI Jury debate system",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project ./tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "spacetimedb",
+    "claude",
+    "gemini",
+    "tavily",
+    "orchestrator"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "mongodb": "^6.3.0",
+    "spacetimedb": "^2.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.12.0",
+    "tsx": "^4.15.8",
+    "typescript": "^5.6.2"
+  }
+}

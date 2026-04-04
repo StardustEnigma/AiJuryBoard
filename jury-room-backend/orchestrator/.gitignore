@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+logs/
+.env
+.env.local
+.DS_Store
+*.swp
+*.swo
+package-lock.json

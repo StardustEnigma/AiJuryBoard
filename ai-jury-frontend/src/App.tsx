@@ -2,8 +2,38 @@ import { useMemo, useState } from 'react'
 import { SpacetimeDBProvider, useSpacetimeDB, useTable } from 'spacetimedb/react';
 import { DbConnection, tables } from './module_bindings';
 
-const SERVER_URL = 'http://localhost:3000';
+const SERVER_URL = 'https://maincloud.spacetimedb.com';
 const DATABASE_NAME = 'ai-jury-board';
+const ORCHESTRATOR_URL = 'http://localhost:9000';
+
+/**
+ * Notify orchestrator about session changes
+ */
+async function notifyOrchestrator(session: any) {
+  try {
+    const payload = {
+      id: session.id.toString(),
+      topic: session.topic,
+      status: session.status,
+      currentTurn: session.currentTurn,
+      roundNumber: session.roundNumber.toString(),
+    };
+    
+    const response = await fetch(`${ORCHESTRATOR_URL}/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    
+    if (response.ok) {
+      console.log('📨 Notified orchestrator:', payload);
+    } else {
+      console.warn('⚠️ Orchestrator notification failed:', response.status);
+    }
+  } catch (e) {
+    console.warn('⚠️ Could not reach orchestrator:', e);
+  }
+}
 
 function JurySessionList({ conn }: { conn: DbConnection }) {
   const [sessions, isLoading] = useTable(tables.jurySession);
@@ -11,12 +41,27 @@ function JurySessionList({ conn }: { conn: DbConnection }) {
 
   const handleCreate = () => {
     if (!topic.trim()) return;
-    conn.reducers.createSession({ topic, maxRounds: 6n });
-    setTopic('');
+    try {
+      conn.reducers.createSession({ topic, maxRounds: 6n });
+      setTopic('');
+      console.log('✅ Create session called');
+      // Will update via subscription
+    } catch (error) {
+      console.error('❌ Create session error:', error);
+    }
   };
 
-  const handleStart = (sessionId: bigint) => {
-    conn.reducers.startDebate({ sessionId });
+  const handleStart = (session: any) => {
+    try {
+      const sessionId = typeof session.id === 'bigint' ? session.id : BigInt(session.id);
+      console.log('🚀 Starting debate for session:', sessionId.toString());
+      conn.reducers.startDebate({ sessionId });
+      console.log('✅ Start debate called');
+      // Notify orchestrator
+      setTimeout(() => notifyOrchestrator(session), 100);
+    } catch (error) {
+      console.error('❌ Start debate error:', error);
+    }
   };
 
   return (
@@ -45,7 +90,15 @@ function JurySessionList({ conn }: { conn: DbConnection }) {
         {sessions.length === 0 ? (
           <p className="text-gray-500">No sessions yet.</p>
         ) : (
-          sessions.map(s => (
+          sessions.map(s => {
+            console.log('Session:', { 
+              id: s.id.toString(), 
+              topic: s.topic,
+              status: s.status,
+              currentTurn: s.currentTurn,
+              roundNumber: s.roundNumber.toString()
+            });
+            return (
             <div key={s.id.toString()} className="bg-white p-4 border rounded shadow-sm">
               <div className="flex justify-between items-start">
                 <div>
@@ -56,17 +109,19 @@ function JurySessionList({ conn }: { conn: DbConnection }) {
                     Round: {s.roundNumber.toString()} / {s.maxRounds.toString()}
                   </div>
                 </div>
-                {s.status === 'DISCOVERY_PENDING' && (
-                  <button 
-                    onClick={() => handleStart(s.id)}
-                    className="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700"
-                  >
-                    Start Debate
-                  </button>
-                )}
+                <button 
+                  onClick={() => {
+                    console.log('🎯 Start Debate clicked for session:', s.id.toString());
+                    handleStart(s);
+                  }}
+                  className="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700"
+                >
+                  Start Debate
+                </button>
               </div>
             </div>
-          ))
+            );
+          })
         )}
       </div>
     </div>
