@@ -13,6 +13,7 @@ import {
 export default __t.row({
   id: __t.u64().primaryKey(),
   sessionId: __t.u64().name("session_id"),
+  idempotencyKey: __t.string().name("idempotency_key"),
   source: __t.string(),
   title: __t.string(),
   content: __t.string(),

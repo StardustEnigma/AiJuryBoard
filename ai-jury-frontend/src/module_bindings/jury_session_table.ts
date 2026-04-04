@@ -18,6 +18,7 @@ export default __t.row({
   roundNumber: __t.u64().name("round_number"),
   maxRounds: __t.u64().name("max_rounds"),
   createdBy: __t.identity().name("created_by"),
+  evidenceSnapshotId: __t.option(__t.u64()).name("evidence_snapshot_id"),
   createdAt: __t.timestamp().name("created_at"),
   updatedAt: __t.timestamp().name("updated_at"),
   verdictId: __t.option(__t.u64()).name("verdict_id"),

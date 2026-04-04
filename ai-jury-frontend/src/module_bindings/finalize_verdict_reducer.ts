@@ -12,6 +12,7 @@ import {
 
 export default {
   sessionId: __t.u64(),
+  idempotencyKey: __t.string(),
   decision: __t.string(),
   summary: __t.string(),
 };

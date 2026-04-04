@@ -6,7 +6,9 @@
 import { type Infer as __Infer } from "spacetimedb";
 
 // Import all reducer arg schemas
+import AdvanceMessageStatusReducer from "../advance_message_status_reducer";
 import CreateSessionReducer from "../create_session_reducer";
+import FailSessionReducer from "../fail_session_reducer";
 import FinalizeVerdictReducer from "../finalize_verdict_reducer";
 import IngestEvidenceReducer from "../ingest_evidence_reducer";
 import MarkAnalyzingReducer from "../mark_analyzing_reducer";
@@ -14,7 +16,9 @@ import PostArgumentReducer from "../post_argument_reducer";
 import RecordFallacyAlertReducer from "../record_fallacy_alert_reducer";
 import StartDebateReducer from "../start_debate_reducer";
 
+export type AdvanceMessageStatusParams = __Infer<typeof AdvanceMessageStatusReducer>;
 export type CreateSessionParams = __Infer<typeof CreateSessionReducer>;
+export type FailSessionParams = __Infer<typeof FailSessionReducer>;
 export type FinalizeVerdictParams = __Infer<typeof FinalizeVerdictReducer>;
 export type IngestEvidenceParams = __Infer<typeof IngestEvidenceReducer>;
 export type MarkAnalyzingParams = __Infer<typeof MarkAnalyzingReducer>;

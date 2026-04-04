@@ -11,8 +11,6 @@ import {
 } from "spacetimedb";
 
 export default {
-  sessionId: __t.u64(),
-  idempotencyKey: __t.string(),
-  role: __t.string(),
-  content: __t.string(),
+  messageId: __t.u64(),
+  status: __t.string(),
 };

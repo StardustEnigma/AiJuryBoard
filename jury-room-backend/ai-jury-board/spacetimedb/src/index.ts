@@ -1,32 +1,34 @@
 import { SenderError, t } from 'spacetimedb/server';
 
-import spacetimedb from './schema';
 import {
   DEFAULT_MAX_ROUNDS,
+  EXPECTED_ROLE_BY_PHASE,
+  JURY_ROLE,
+  MESSAGE_STATUS,
+  NEXT_PHASE_BY_ROLE,
   OPENING_ROLE,
-  isValidRole,
-  nextRole,
+  SESSION_PHASE,
+  canAdvanceMessageStatus,
+  isTerminalPhase,
+  isValidMessageStatus,
   normalizeText,
+  roundForRole,
+  toCanonicalRole,
 } from './lib';
-
-type JurySessionRow = {
-  id: bigint;
-  topic: string;
-  status: string;
-  currentTurn: string;
-  roundNumber: bigint;
-  maxRounds: bigint;
-  createdBy: unknown;
-  createdAt: unknown;
-  updatedAt: unknown;
-  verdictId?: bigint;
-};
+import spacetimedb from './schema';
 
 type JuryReducerCtx = {
   timestamp: unknown;
   sender: unknown;
   db: any;
 };
+
+function firstOrUndefined<T>(iterable: Iterable<T>): T | undefined {
+  for (const row of iterable) {
+    return row;
+  }
+  return undefined;
+}
 
 function requireSession(ctx: JuryReducerCtx, sessionId: bigint) {
   const session = ctx.db.jurySession.id.find(sessionId);
@@ -36,19 +38,39 @@ function requireSession(ctx: JuryReducerCtx, sessionId: bigint) {
   return session as any;
 }
 
-function advanceSessionTurn(ctx: JuryReducerCtx, session: JurySessionRow) {
-  const isDefenseTurn = session.currentTurn === 'defense';
-  const nextTurn = nextRole(isValidRole(session.currentTurn) ? session.currentTurn : OPENING_ROLE);
-  const nextRound = isDefenseTurn ? session.roundNumber + 1n : session.roundNumber;
-  const reachedAnalysis = isDefenseTurn && nextRound > session.maxRounds;
+function requireIdempotencyKey(value: string): string {
+  const key = normalizeText(value);
+  if (!key) {
+    throw new SenderError('idempotencyKey is required');
+  }
+  return key;
+}
 
-  ctx.db.jurySession.id.update({
-    ...session,
-    currentTurn: reachedAnalysis ? 'analyzing' : nextTurn,
-    roundNumber: nextRound,
-    status: reachedAnalysis ? 'analyzing' : 'debating',
-    updatedAt: ctx.timestamp,
-  });
+function toCanonicalMessageStatus(value: string) {
+  const normalized = normalizeText(value).toUpperCase().replace(/[\s-]+/g, '_');
+  return isValidMessageStatus(normalized) ? normalized : undefined;
+}
+
+function findEvidenceByIdempotencyKey(ctx: JuryReducerCtx, idempotencyKey: string) {
+  return firstOrUndefined(ctx.db.evidence.evidence_idempotency_key.filter(idempotencyKey));
+}
+
+function findMessageByIdempotencyKey(ctx: JuryReducerCtx, idempotencyKey: string) {
+  return firstOrUndefined(ctx.db.message.message_idempotency_key.filter(idempotencyKey));
+}
+
+function findVerdictByIdempotencyKey(ctx: JuryReducerCtx, idempotencyKey: string) {
+  return firstOrUndefined(ctx.db.verdict.verdict_idempotency_key.filter(idempotencyKey));
+}
+
+function nextTurnAfterRole(role: (typeof JURY_ROLE)[keyof typeof JURY_ROLE]): string {
+  if (role === JURY_ROLE.PROSECUTION) {
+    return JURY_ROLE.DEFENSE;
+  }
+  if (role === JURY_ROLE.DEFENSE) {
+    return JURY_ROLE.DEVILS_ADVOCATE;
+  }
+  return 'ANALYZING';
 }
 
 export default spacetimedb;
@@ -58,11 +80,11 @@ export const init = spacetimedb.init(() => {
 });
 
 export const onConnect = spacetimedb.clientConnected(() => {
-  // Connection lifecycle hook reserved for future room bookkeeping.
+  // Reserved for future online presence tracking.
 });
 
 export const onDisconnect = spacetimedb.clientDisconnected(() => {
-  // Connection lifecycle hook reserved for future cleanup.
+  // Reserved for future cleanup hooks.
 });
 
 export const createSession = spacetimedb.reducer(
@@ -73,16 +95,20 @@ export const createSession = spacetimedb.reducer(
       throw new SenderError('Topic is required');
     }
 
-    const sessionMaxRounds = maxRounds ?? DEFAULT_MAX_ROUNDS;
+    const rounds = maxRounds ?? DEFAULT_MAX_ROUNDS;
+    if (rounds < 1n) {
+      throw new SenderError('maxRounds must be at least 1');
+    }
 
     ctx.db.jurySession.insert({
       id: 0n,
       topic: normalizedTopic,
-      status: 'idle',
+      status: SESSION_PHASE.DISCOVERY_PENDING,
       currentTurn: OPENING_ROLE,
-      roundNumber: 1n,
-      maxRounds: sessionMaxRounds,
+      roundNumber: 0n,
+      maxRounds: rounds,
       createdBy: ctx.sender,
+      evidenceSnapshotId: undefined,
       createdAt: ctx.timestamp,
       updatedAt: ctx.timestamp,
       verdictId: undefined,
@@ -93,17 +119,19 @@ export const createSession = spacetimedb.reducer(
 export const startDebate = spacetimedb.reducer(
   { sessionId: t.u64() },
   (ctx, { sessionId }) => {
-    const session = requireSession(ctx, sessionId) as any;
+    const session = requireSession(ctx, sessionId);
 
-    if (session.status !== 'idle') {
-      throw new SenderError('Session is already active');
+    if (isTerminalPhase(session.status)) {
+      throw new SenderError('Session is already terminal');
+    }
+
+    if (session.status !== SESSION_PHASE.DISCOVERY_PENDING) {
+      throw new SenderError('Session has already moved beyond discovery');
     }
 
     ctx.db.jurySession.id.update({
       ...session,
-      status: 'debating',
       currentTurn: OPENING_ROLE,
-      roundNumber: 1n,
       updatedAt: ctx.timestamp,
     });
   }
@@ -112,67 +140,161 @@ export const startDebate = spacetimedb.reducer(
 export const ingestEvidence = spacetimedb.reducer(
   {
     sessionId: t.u64(),
+    idempotencyKey: t.string(),
     source: t.string(),
     title: t.string(),
     content: t.string(),
     url: t.string().optional(),
   },
-  (ctx, { sessionId, source, title, content, url }) => {
-    const session = requireSession(ctx, sessionId) as any;
+  (ctx, { sessionId, idempotencyKey, source, title, content, url }) => {
+    const normalizedKey = requireIdempotencyKey(idempotencyKey);
+    const existing = findEvidenceByIdempotencyKey(ctx, normalizedKey) as any | undefined;
+    if (existing) {
+      if (existing.sessionId !== sessionId) {
+        throw new SenderError('idempotencyKey already belongs to another session');
+      }
+      return;
+    }
 
-    ctx.db.evidence.insert({
+    const session = requireSession(ctx, sessionId);
+    if (session.status !== SESSION_PHASE.DISCOVERY_PENDING) {
+      throw new SenderError('Evidence can only be ingested during DISCOVERY_PENDING');
+    }
+
+    if (session.evidenceSnapshotId !== undefined) {
+      throw new SenderError('Evidence snapshot already frozen for this session');
+    }
+
+    const normalizedSource = normalizeText(source);
+    const normalizedTitle = normalizeText(title);
+    const normalizedContent = content.trim();
+    if (!normalizedSource || !normalizedTitle || !normalizedContent) {
+      throw new SenderError('source, title, and content are required');
+    }
+
+    const evidence = ctx.db.evidence.insert({
       id: 0n,
       sessionId,
-      source: normalizeText(source),
-      title: normalizeText(title),
-      content: content.trim(),
+      idempotencyKey: normalizedKey,
+      source: normalizedSource,
+      title: normalizedTitle,
+      content: normalizedContent,
       url,
       createdAt: ctx.timestamp,
     });
 
-    if (session.status === 'idle') {
-      ctx.db.jurySession.id.update({
-        ...session,
-        status: 'debating',
-        updatedAt: ctx.timestamp,
-      });
-    }
+    ctx.db.jurySession.id.update({
+      ...session,
+      status: SESSION_PHASE.DISCOVERY_DONE,
+      evidenceSnapshotId: evidence.id,
+      currentTurn: JURY_ROLE.PROSECUTION,
+      roundNumber: 1n,
+      updatedAt: ctx.timestamp,
+    });
   }
 );
 
 export const postArgument = spacetimedb.reducer(
   {
     sessionId: t.u64(),
+    idempotencyKey: t.string(),
     role: t.string(),
     content: t.string(),
   },
-  (ctx, { sessionId, role, content }) => {
-    const session = requireSession(ctx, sessionId) as any;
-    const normalizedRole = normalizeText(role).toLowerCase();
-
-    if (!isValidRole(normalizedRole)) {
-      throw new SenderError('Invalid debate role');
+  (ctx, { sessionId, idempotencyKey, role, content }) => {
+    const normalizedKey = requireIdempotencyKey(idempotencyKey);
+    const existing = findMessageByIdempotencyKey(ctx, normalizedKey) as any | undefined;
+    if (existing) {
+      if (existing.sessionId !== sessionId) {
+        throw new SenderError('idempotencyKey already belongs to another session');
+      }
+      return;
     }
 
-    if (session.status !== 'debating') {
-      throw new SenderError('Session is not accepting arguments');
+    const session = requireSession(ctx, sessionId);
+    if (isTerminalPhase(session.status)) {
+      throw new SenderError('Session is terminal');
     }
 
-    if (session.currentTurn !== normalizedRole) {
-      throw new SenderError(`It is currently ${session.currentTurn}'s turn`);
+    const expectedRole = EXPECTED_ROLE_BY_PHASE[session.status as keyof typeof EXPECTED_ROLE_BY_PHASE];
+    if (!expectedRole) {
+      throw new SenderError(`Session phase ${session.status} does not accept debate messages`);
+    }
+
+    const canonicalRole = toCanonicalRole(role);
+    if (!canonicalRole) {
+      throw new SenderError('Invalid role, expected PROSECUTION, DEFENSE, or DEVILS_ADVOCATE');
+    }
+
+    if (canonicalRole !== expectedRole) {
+      throw new SenderError(`Expected role ${expectedRole} for phase ${session.status}`);
+    }
+
+    if (session.evidenceSnapshotId === undefined) {
+      throw new SenderError('Session has no frozen evidence snapshot');
+    }
+
+    const normalizedContent = content.trim();
+    if (!normalizedContent) {
+      throw new SenderError('Argument content is required');
     }
 
     ctx.db.message.insert({
       id: 0n,
       sessionId,
-      role: normalizedRole,
+      idempotencyKey: normalizedKey,
+      evidenceSnapshotId: session.evidenceSnapshotId,
+      role: canonicalRole,
+      messageStatus: MESSAGE_STATUS.DRAFT,
       sender: ctx.sender,
-      content: content.trim(),
-      roundNumber: session.roundNumber,
+      content: normalizedContent,
+      roundNumber: roundForRole(canonicalRole),
       createdAt: ctx.timestamp,
     });
 
-    advanceSessionTurn(ctx, session);
+    ctx.db.jurySession.id.update({
+      ...session,
+      status: NEXT_PHASE_BY_ROLE[canonicalRole],
+      currentTurn: nextTurnAfterRole(canonicalRole),
+      roundNumber: roundForRole(canonicalRole),
+      updatedAt: ctx.timestamp,
+    });
+  }
+);
+
+export const advanceMessageStatus = spacetimedb.reducer(
+  {
+    messageId: t.u64(),
+    status: t.string(),
+  },
+  (ctx, { messageId, status }) => {
+    const message = ctx.db.message.id.find(messageId);
+    if (!message) {
+      throw new SenderError('Message not found');
+    }
+
+    const currentStatus = toCanonicalMessageStatus(message.messageStatus);
+    if (!currentStatus) {
+      throw new SenderError('Message has an invalid current status');
+    }
+
+    const nextStatus = toCanonicalMessageStatus(status);
+    if (!nextStatus) {
+      throw new SenderError('Invalid status, expected DRAFT, VALIDATED, BROADCASTABLE, or SPOKEN');
+    }
+
+    if (!canAdvanceMessageStatus(currentStatus, nextStatus)) {
+      throw new SenderError(`Cannot transition message status from ${currentStatus} to ${nextStatus}`);
+    }
+
+    if (currentStatus === nextStatus) {
+      return;
+    }
+
+    ctx.db.message.id.update({
+      ...message,
+      messageStatus: nextStatus,
+    });
   }
 );
 
@@ -187,13 +309,30 @@ export const recordFallacyAlert = spacetimedb.reducer(
   (ctx, { sessionId, messageId, source, severity, content }) => {
     requireSession(ctx, sessionId);
 
+    if (messageId !== undefined) {
+      const message = ctx.db.message.id.find(messageId);
+      if (!message) {
+        throw new SenderError('messageId does not exist');
+      }
+      if (message.sessionId !== sessionId) {
+        throw new SenderError('messageId does not belong to the provided session');
+      }
+    }
+
+    const normalizedSource = normalizeText(source);
+    const normalizedSeverity = normalizeText(severity);
+    const normalizedContent = content.trim();
+    if (!normalizedSource || !normalizedSeverity || !normalizedContent) {
+      throw new SenderError('source, severity, and content are required');
+    }
+
     ctx.db.alert.insert({
       id: 0n,
       sessionId,
       messageId,
-      source: normalizeText(source),
-      severity: normalizeText(severity),
-      content: content.trim(),
+      source: normalizedSource,
+      severity: normalizedSeverity,
+      content: normalizedContent,
       createdAt: ctx.timestamp,
     });
   }
@@ -202,12 +341,20 @@ export const recordFallacyAlert = spacetimedb.reducer(
 export const markAnalyzing = spacetimedb.reducer(
   { sessionId: t.u64() },
   (ctx, { sessionId }) => {
-    const session = requireSession(ctx, sessionId) as any;
+    const session = requireSession(ctx, sessionId);
+
+    if (session.status === SESSION_PHASE.SYNTHESIS_PENDING) {
+      return;
+    }
+
+    if (session.status !== SESSION_PHASE.DEVILS_ADVOCATE_DONE) {
+      throw new SenderError('Session must be DEVILS_ADVOCATE_DONE before synthesis');
+    }
 
     ctx.db.jurySession.id.update({
       ...session,
-      status: 'analyzing',
-      currentTurn: 'analyzing',
+      status: SESSION_PHASE.SYNTHESIS_PENDING,
+      currentTurn: 'SYNTHESIS',
       updatedAt: ctx.timestamp,
     });
   }
@@ -216,34 +363,92 @@ export const markAnalyzing = spacetimedb.reducer(
 export const finalizeVerdict = spacetimedb.reducer(
   {
     sessionId: t.u64(),
+    idempotencyKey: t.string(),
     decision: t.string(),
     summary: t.string(),
   },
-  (ctx, { sessionId, decision, summary }) => {
-    const session = requireSession(ctx, sessionId) as any;
-
-    if (session.status === 'closed') {
-      throw new SenderError('Session already finalized');
+  (ctx, { sessionId, idempotencyKey, decision, summary }) => {
+    const normalizedKey = requireIdempotencyKey(idempotencyKey);
+    const existingByKey = findVerdictByIdempotencyKey(ctx, normalizedKey) as any | undefined;
+    if (existingByKey) {
+      if (existingByKey.sessionId !== sessionId) {
+        throw new SenderError('idempotencyKey already belongs to another session');
+      }
+      return;
     }
 
-    const existingVerdict = [...ctx.db.verdict.verdict_session_id.filter(sessionId)][0];
-    if (existingVerdict) {
+    const session = requireSession(ctx, sessionId);
+    if (session.status !== SESSION_PHASE.SYNTHESIS_PENDING) {
+      throw new SenderError('Session must be SYNTHESIS_PENDING to finalize verdict');
+    }
+
+    if (session.evidenceSnapshotId === undefined) {
+      throw new SenderError('Session has no evidence snapshot reference');
+    }
+
+    const existingBySession = firstOrUndefined(ctx.db.verdict.verdict_session_id.filter(sessionId));
+    if (existingBySession) {
       throw new SenderError('Verdict already exists for this session');
+    }
+
+    const normalizedDecision = normalizeText(decision);
+    const normalizedSummary = summary.trim();
+    if (!normalizedDecision || !normalizedSummary) {
+      throw new SenderError('decision and summary are required');
     }
 
     const verdict = ctx.db.verdict.insert({
       id: 0n,
       sessionId,
-      decision: normalizeText(decision),
-      summary: summary.trim(),
+      evidenceSnapshotId: session.evidenceSnapshotId,
+      idempotencyKey: normalizedKey,
+      decision: normalizedDecision,
+      summary: normalizedSummary,
       createdAt: ctx.timestamp,
     });
 
     ctx.db.jurySession.id.update({
       ...session,
-      status: 'closed',
-      currentTurn: 'closed',
+      status: SESSION_PHASE.COMPLETED,
+      currentTurn: SESSION_PHASE.COMPLETED,
       verdictId: verdict.id,
+      updatedAt: ctx.timestamp,
+    });
+  }
+);
+
+export const failSession = spacetimedb.reducer(
+  { sessionId: t.u64(), reason: t.string() },
+  (ctx, { sessionId, reason }) => {
+    const session = requireSession(ctx, sessionId);
+
+    if (session.status === SESSION_PHASE.COMPLETED) {
+      throw new SenderError('Completed sessions cannot be marked as failed');
+    }
+
+    if (session.status === SESSION_PHASE.FAILED) {
+      return;
+    }
+
+    const normalizedReason = reason.trim();
+    if (!normalizedReason) {
+      throw new SenderError('reason is required');
+    }
+
+    ctx.db.alert.insert({
+      id: 0n,
+      sessionId,
+      messageId: undefined,
+      source: 'ORCHESTRATOR',
+      severity: 'ERROR',
+      content: normalizedReason,
+      createdAt: ctx.timestamp,
+    });
+
+    ctx.db.jurySession.id.update({
+      ...session,
+      status: SESSION_PHASE.FAILED,
+      currentTurn: SESSION_PHASE.FAILED,
       updatedAt: ctx.timestamp,
     });
   }

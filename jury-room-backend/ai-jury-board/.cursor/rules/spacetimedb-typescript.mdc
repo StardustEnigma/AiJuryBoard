@@ -22,7 +22,7 @@ connection.call("reducer_name", [arg1, arg2]);
 // ❌ WRONG — positional reducer arguments
 conn.reducers.doSomething("value");  // WRONG!
 
-// ❌ WRONG — static methods on generated types don't exist
+// ❌ WRONG — static methods on generated types don'=t exist
 User.filterByName('alice');
 Message.findById(123n);
 tables.user.filter(u => u.name === 'alice');  // No .filter() on tables object!
@@ -45,7 +45,7 @@ const [items, isLoading] = useTable(tables.item);
 
 ### ⛔ DO NOT:
 - **Invent hooks** like `useItems()`, `useData()` — use `useTable(tables.tableName)`
-- **Import from fake packages** — only `spacetimedb`, `spacetimedb/react`, `./module_bindings`
+- **Import from fake packages** — only `spacetimedb`, `spacetimedb/react`, `./module_bindings` ,
 
 ---
 

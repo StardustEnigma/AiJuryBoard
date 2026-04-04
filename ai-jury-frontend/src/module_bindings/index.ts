@@ -34,7 +34,9 @@ import {
 } from "spacetimedb";
 
 // Import all reducer arg schemas
+import AdvanceMessageStatusReducer from "./advance_message_status_reducer";
 import CreateSessionReducer from "./create_session_reducer";
+import FailSessionReducer from "./fail_session_reducer";
 import FinalizeVerdictReducer from "./finalize_verdict_reducer";
 import IngestEvidenceReducer from "./ingest_evidence_reducer";
 import MarkAnalyzingReducer from "./mark_analyzing_reducer";
@@ -75,6 +77,9 @@ const tablesSchema = __schema({
       { accessor: 'id', name: 'evidence_id_idx_btree', algorithm: 'btree', columns: [
         'id',
       ] },
+      { accessor: 'evidence_idempotency_key', name: 'evidence_idempotency_key_idx_btree', algorithm: 'btree', columns: [
+        'idempotencyKey',
+      ] },
       { accessor: 'evidence_session_id', name: 'evidence_session_id_idx_btree', algorithm: 'btree', columns: [
         'sessionId',
       ] },
@@ -88,6 +93,9 @@ const tablesSchema = __schema({
     indexes: [
       { accessor: 'jury_session_current_turn', name: 'jury_session_current_turn_idx_btree', algorithm: 'btree', columns: [
         'currentTurn',
+      ] },
+      { accessor: 'jury_session_evidence_snapshot_id', name: 'jury_session_evidence_snapshot_id_idx_btree', algorithm: 'btree', columns: [
+        'evidenceSnapshotId',
       ] },
       { accessor: 'id', name: 'jury_session_id_idx_btree', algorithm: 'btree', columns: [
         'id',
@@ -106,6 +114,12 @@ const tablesSchema = __schema({
       { accessor: 'id', name: 'message_id_idx_btree', algorithm: 'btree', columns: [
         'id',
       ] },
+      { accessor: 'message_idempotency_key', name: 'message_idempotency_key_idx_btree', algorithm: 'btree', columns: [
+        'idempotencyKey',
+      ] },
+      { accessor: 'message_status', name: 'message_message_status_idx_btree', algorithm: 'btree', columns: [
+        'messageStatus',
+      ] },
       { accessor: 'message_role', name: 'message_role_idx_btree', algorithm: 'btree', columns: [
         'role',
       ] },
@@ -123,6 +137,9 @@ const tablesSchema = __schema({
       { accessor: 'id', name: 'verdict_id_idx_btree', algorithm: 'btree', columns: [
         'id',
       ] },
+      { accessor: 'verdict_idempotency_key', name: 'verdict_idempotency_key_idx_btree', algorithm: 'btree', columns: [
+        'idempotencyKey',
+      ] },
       { accessor: 'verdict_session_id', name: 'verdict_session_id_idx_btree', algorithm: 'btree', columns: [
         'sessionId',
       ] },
@@ -135,7 +152,9 @@ const tablesSchema = __schema({
 
 /** The schema information for all reducers in this module. This is defined the same way as the reducers would have been defined in the server, except the body of the reducer is omitted in code generation. */
 const reducersSchema = __reducers(
+  __reducerSchema("advance_message_status", AdvanceMessageStatusReducer),
   __reducerSchema("create_session", CreateSessionReducer),
+  __reducerSchema("fail_session", FailSessionReducer),
   __reducerSchema("finalize_verdict", FinalizeVerdictReducer),
   __reducerSchema("ingest_evidence", IngestEvidenceReducer),
   __reducerSchema("mark_analyzing", MarkAnalyzingReducer),

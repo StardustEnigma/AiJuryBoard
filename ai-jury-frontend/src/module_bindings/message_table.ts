@@ -13,7 +13,10 @@ import {
 export default __t.row({
   id: __t.u64().primaryKey(),
   sessionId: __t.u64().name("session_id"),
+  idempotencyKey: __t.string().name("idempotency_key"),
+  evidenceSnapshotId: __t.u64().name("evidence_snapshot_id"),
   role: __t.string(),
+  messageStatus: __t.string().name("message_status"),
   sender: __t.identity(),
   content: __t.string(),
   roundNumber: __t.u64().name("round_number"),

@@ -146,10 +146,10 @@ COMPLETED or FAILED
 | **Spacetime Schema** | ✅ Done | `spacetimedb/src/schema.ts` | Tables: JurySession, Evidence, Message, Alert, Verdict |
 | **Spacetime Reducers** | ✅ Done | `spacetimedb/src/index.ts` | All 7 reducers implemented |
 | **Frontend UI Harness** | ✅ Done | `ai-jury-frontend/src/App.tsx` | Session creation & start debate UI |
-| **Phase Transition System** | ⏳ Pending | `spacetimedb/src/schema.ts` | Add status field with strict enum: DISCOVERY_PENDING, DISCOVERY_DONE, ..., COMPLETED |
-| **Evidence Snapshot Ref** | ⏳ Pending | `spacetimedb/src/schema.ts` | Add `evidence_snapshot_id` to Message & Verdict for auditability |
-| **Message Status Lifecycle** | ⏳ Pending | `spacetimedb/src/schema.ts` | Add `message_status: DRAFT | VALIDATED | BROADCASTABLE | SPOKEN` to Message table |
-| **Idempotency Keys** | ⏳ Pending | `spacetimedb/src/schema.ts` | Add `idempotency_key` to Evidence, Message, Verdict (prevent duplicates on retry) |
+| **Phase Transition System** | ✅ Done | `spacetimedb/src/schema.ts` + `spacetimedb/src/index.ts` | Strict phase machine implemented: DISCOVERY_PENDING → ... → COMPLETED/FAILED with reducer guards |
+| **Evidence Snapshot Ref** | ✅ Done | `spacetimedb/src/schema.ts` + `spacetimedb/src/index.ts` | `evidenceSnapshotId` added to Session/Message/Verdict and frozen during discovery |
+| **Message Status Lifecycle** | ✅ Done | `spacetimedb/src/schema.ts` + `spacetimedb/src/index.ts` | `messageStatus` added with guarded `advanceMessageStatus` reducer enforcing DRAFT → VALIDATED → BROADCASTABLE → SPOKEN |
+| **Idempotency Keys** | ✅ Done | `spacetimedb/src/schema.ts` + `spacetimedb/src/index.ts` | `idempotencyKey` added to Evidence/Message/Verdict with indexed dedupe checks in reducers |
 | **Orchestrator Entry Point** | ⏳ Pending | `orchestrator/index.ts` | Boot all workers, watch phase transitions, enforce one-writer lock per phase |
 | **Discovery Worker** | ⏳ Pending | `orchestrator/workers/discovery.ts` | Poll DISCOVERY_PENDING → Tavily (ArmorIQ gate) → ingestEvidence → DISCOVERY_DONE |
 | **Prosecution Worker** | ⏳ Pending | `orchestrator/workers/prosecution.ts` | Poll DISCOVERY_DONE → Claude prosecution (ArmorIQ gate) → postArgument → PROSECUTION_DONE |

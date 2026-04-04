@@ -56,7 +56,7 @@ function JurySessionList({ conn }: { conn: DbConnection }) {
                     Round: {s.roundNumber.toString()} / {s.maxRounds.toString()}
                   </div>
                 </div>
-                {s.status === 'idle' && (
+                {s.status === 'DISCOVERY_PENDING' && (
                   <button 
                     onClick={() => handleStart(s.id)}
                     className="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700"

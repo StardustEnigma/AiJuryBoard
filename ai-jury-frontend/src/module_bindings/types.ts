@@ -24,6 +24,7 @@ export type Alert = __Infer<typeof Alert>;
 export const Evidence = __t.object("Evidence", {
   id: __t.u64(),
   sessionId: __t.u64(),
+  idempotencyKey: __t.string(),
   source: __t.string(),
   title: __t.string(),
   content: __t.string(),
@@ -40,6 +41,7 @@ export const JurySession = __t.object("JurySession", {
   roundNumber: __t.u64(),
   maxRounds: __t.u64(),
   createdBy: __t.identity(),
+  evidenceSnapshotId: __t.option(__t.u64()),
   createdAt: __t.timestamp(),
   updatedAt: __t.timestamp(),
   verdictId: __t.option(__t.u64()),
@@ -49,7 +51,10 @@ export type JurySession = __Infer<typeof JurySession>;
 export const Message = __t.object("Message", {
   id: __t.u64(),
   sessionId: __t.u64(),
+  idempotencyKey: __t.string(),
+  evidenceSnapshotId: __t.u64(),
   role: __t.string(),
+  messageStatus: __t.string(),
   sender: __t.identity(),
   content: __t.string(),
   roundNumber: __t.u64(),
@@ -60,6 +65,8 @@ export type Message = __Infer<typeof Message>;
 export const Verdict = __t.object("Verdict", {
   id: __t.u64(),
   sessionId: __t.u64(),
+  evidenceSnapshotId: __t.u64(),
+  idempotencyKey: __t.string(),
   decision: __t.string(),
   summary: __t.string(),
   createdAt: __t.timestamp(),

@@ -13,6 +13,8 @@ import {
 export default __t.row({
   id: __t.u64().primaryKey(),
   sessionId: __t.u64().name("session_id"),
+  evidenceSnapshotId: __t.u64().name("evidence_snapshot_id"),
+  idempotencyKey: __t.string().name("idempotency_key"),
   decision: __t.string(),
   summary: __t.string(),
   createdAt: __t.timestamp().name("created_at"),

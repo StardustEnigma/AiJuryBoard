@@ -12,7 +12,5 @@ import {
 
 export default {
   sessionId: __t.u64(),
-  idempotencyKey: __t.string(),
-  role: __t.string(),
-  content: __t.string(),
+  reason: __t.string(),
 };
