@@ -15,6 +15,16 @@ const PHASE_FLOW = [
   'SYNTHESIS_PENDING',
   'COMPLETED',
 ];
+const SYNTHESIS_SECTION_LABELS = [
+  'PROSECUTION_SUMMARY:',
+  'DEFENSE_SUMMARY:',
+  'DEVIL_ADVOCATE_ANALYSIS:',
+  'SHARED_REALITY:',
+  'REMAINING_DISAGREEMENT:',
+  'VERDICT:',
+] as const;
+const SYNTHESIS_SECTION_TOKEN_REGEX =
+  /(PROSECUTION_SUMMARY:|DEFENSE_SUMMARY:|DEVIL_ADVOCATE_ANALYSIS:|SHARED_REALITY:|REMAINING_DISAGREEMENT:|VERDICT:)/gi;
 
 type NoticeTone = 'info' | 'success' | 'error';
 type Notice = { tone: NoticeTone; message: string } | null;
@@ -60,6 +70,80 @@ function cleanMarkdownText(value: string): string {
     .trim();
 }
 
+function isNotProvided(value: string): boolean {
+  return /^not provided\.?$/i.test(value.trim());
+}
+
+function parseSynthesisSections(value: string): Map<string, string[]> {
+  const source = cleanMarkdownText(value).replace(/\s+/g, ' ').trim();
+  const sections = new Map<string, string[]>();
+  if (!source) {
+    return sections;
+  }
+
+  const tokens: Array<{ label: string; start: number; end: number }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = SYNTHESIS_SECTION_TOKEN_REGEX.exec(source)) !== null) {
+    tokens.push({
+      label: match[1].toUpperCase(),
+      start: match.index,
+      end: SYNTHESIS_SECTION_TOKEN_REGEX.lastIndex,
+    });
+  }
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const current = tokens[index];
+    const next = tokens[index + 1];
+    const content = source.slice(current.end, next?.start ?? source.length).trim();
+    if (!content) continue;
+
+    const existing = sections.get(current.label) ?? [];
+    existing.push(content);
+    sections.set(current.label, existing);
+  }
+
+  return sections;
+}
+
+function preferredSectionValue(values: string[]): string {
+  const preferred = values.find((value) => !isNotProvided(value));
+  return preferred ?? values[0] ?? 'Not provided.';
+}
+
+function canonicalizeVerdictSummary(summary: string): string {
+  const sections = parseSynthesisSections(summary);
+
+  if (sections.size === 0) {
+    const fallback = cleanMarkdownText(summary).replace(/\s+/g, ' ').trim();
+    return fallback || 'Not provided.';
+  }
+
+  return SYNTHESIS_SECTION_LABELS.map((label) => {
+    const values = sections.get(label) ?? [];
+    return `${label} ${preferredSectionValue(values)}`;
+  }).join(' ');
+}
+
+function normalizeVerdictDecision(decision: string, summary: string): string {
+  const summarySections = parseSynthesisSections(summary);
+  const summaryVerdict = preferredSectionValue(summarySections.get('VERDICT:') ?? []);
+
+  let out = !isNotProvided(summaryVerdict)
+    ? summaryVerdict
+    : cleanMarkdownText(decision).replace(/\s+/g, ' ').trim();
+
+  out = out.replace(/^VERDICT:\s*/i, '').trim();
+
+  const marker = out.match(
+    /(?:PROSECUTION_SUMMARY:|DEFENSE_SUMMARY:|DEVIL_ADVOCATE_ANALYSIS:|SHARED_REALITY:|REMAINING_DISAGREEMENT:|VERDICT:)/i
+  );
+  if (marker?.index && marker.index > 0) {
+    out = out.slice(0, marker.index).trim();
+  }
+
+  return out || 'Not provided.';
+}
+
 function toMessagePoints(value: string): string[] {
   const trimmed = cleanMarkdownText(value).trim();
   if (!trimmed) return [];
@@ -94,8 +178,8 @@ function toMessagePoints(value: string): string[] {
     const candidate = bucket ? `${bucket} ${sentence}` : sentence;
     const candidateWordCount = candidate.split(' ').filter(Boolean).length;
 
-    // Keep each bullet compact but meaningful.
-    if (!bucket || candidateWordCount <= 26) {
+    // Keep each bullet readable while allowing connected reasoning.
+    if (!bucket || candidateWordCount <= 42) {
       bucket = candidate;
     } else {
       grouped.push(bucket);
@@ -229,8 +313,23 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
     if (!activeSessionId) return [] as Alert[];
 
     const filtered = alerts.filter((row) => toId(row.sessionId) === activeSessionId) as Alert[];
-    filtered.sort((a, b) => compareBigIntAsc(toBigInt(a.id), toBigInt(b.id)));
-    return filtered;
+
+    const dedupedBySignature = new Map<string, Alert>();
+    for (const alert of filtered) {
+      const signature = [
+        alert.messageId ? toId(alert.messageId) : 'N/A',
+        String(alert.source || '').toLowerCase(),
+      ].join('|');
+
+      const existing = dedupedBySignature.get(signature);
+      if (!existing || compareBigIntAsc(toBigInt(existing.id), toBigInt(alert.id)) < 0) {
+        dedupedBySignature.set(signature, alert);
+      }
+    }
+
+    const deduped = [...dedupedBySignature.values()];
+    deduped.sort((a, b) => compareBigIntAsc(toBigInt(a.id), toBigInt(b.id)));
+    return deduped;
   }, [activeSessionId, alerts]);
 
   const sessionVerdicts = useMemo(() => {
@@ -482,9 +581,11 @@ function JuryWorkspace({ conn }: { conn: DbConnection }) {
               ) : (
                 <article className="verdict-card">
                   <h4 className="entry-title">Decision</h4>
-                  <p className="entry-content">{cleanMarkdownText(sessionVerdicts[0].decision)}</p>
+                  <p className="entry-content">
+                    {normalizeVerdictDecision(sessionVerdicts[0].decision, sessionVerdicts[0].summary)}
+                  </p>
                   <h4 className="entry-title">Summary</h4>
-                  <p className="entry-content">{cleanMarkdownText(sessionVerdicts[0].summary)}</p>
+                  <p className="entry-content">{canonicalizeVerdictSummary(sessionVerdicts[0].summary)}</p>
                 </article>
               )}
             </section>

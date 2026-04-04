@@ -15,10 +15,10 @@ const DEFENSE_PROMPT = `You are the Defense in a debate.
 Use plain English only.
 
 Rules:
-- Short, simple sentences.
-- No complex or high-level words.
-- Give exactly 3 counterpoints.
-- One simple closing line.
+- Keep the flow connected and directly reply to prosecution claims.
+- Give exactly 3 counterpoints with 1-2 sentences each.
+- Include one practical risk or tradeoff example.
+- Add one short closing line.
 
 Format:
 Counterpoint 1:
@@ -26,7 +26,7 @@ Counterpoint 2:
 Counterpoint 3:
 Closing:
 
-Limit: 70 to 90 words total.`;
+Limit: 110 to 140 words total.`;
 
 export async function runDefenseWorker(intervalMs = 15000) {
   log('🛡️', 'Defense Worker started');
@@ -72,12 +72,12 @@ async function processDefenseSession(conn: any, session: DebateSession) {
 
     const systemPrompt = `${DEFENSE_PROMPT}\n\n${prosecutionContext}Generate your response now.`;
     const defenseArgRaw = await callMixtral(systemPrompt);
-    const policyCheck = gateGeneratedArgument(JURY_ROLE.DEFENSE, defenseArgRaw, 90);
+    const policyCheck = gateGeneratedArgument(JURY_ROLE.DEFENSE, defenseArgRaw, 140);
     if (policyCheck.warnings.length > 0) {
       log('🛡️', `Defense output sanitized for session ${sessionId}: ${policyCheck.warnings.join(', ')}`);
     }
 
-    const defenseArg = clampToWords(policyCheck.sanitizedText, 90);
+    const defenseArg = clampToWords(policyCheck.sanitizedText, 140);
 
     // Write via reducer
     await conn.reducers.postArgument({

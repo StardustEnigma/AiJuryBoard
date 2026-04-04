@@ -9,43 +9,151 @@ function useMockApis(): boolean {
   return (process.env.ALLOW_MOCK_APIS || 'true').toLowerCase() !== 'false';
 }
 
+function normalizeTopicForMock(query: string): string {
+  const cleaned = query
+    .replace(/\b(opposing\s+viewpoints?|counter\s+evidence|counter\s+arguments?|criticism|critical\s+analysis)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || query.replace(/\s+/g, ' ').trim();
+}
+
+function isCounterViewQuery(query: string): boolean {
+  return /opposing\s+viewpoints?|counter\s+evidence|counter\s+arguments?|criticism|critical\s+analysis/i.test(query);
+}
+
+function extractTopicFromPrompt(prompt: string): string {
+  const topicMatch = prompt.match(/Topic:\s*([^\n]+)/i);
+  if (topicMatch?.[1]) {
+    return topicMatch[1].trim();
+  }
+
+  const quoted = prompt.match(/"([^"]{3,120})"/);
+  if (quoted?.[1]) {
+    return quoted[1].trim();
+  }
+
+  return 'the topic';
+}
+
+function hashText(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function mockFallacyResponse(prompt: string): string {
+  const argumentMatch = prompt.match(/Argument to analyze:\s*[\r\n]*"?([\s\S]+?)"?\s*$/i);
+  const argument = (argumentMatch?.[1] || prompt).replace(/\s+/g, ' ').trim();
+  const score = hashText(argument) % 5;
+
+  const variants = [
+    {
+      fallacy: 'Potential hasty generalization',
+      severity: 'LOW',
+      explanation:
+        'The claim appears to move from limited examples to a broad conclusion. It should cite wider evidence before asserting certainty.',
+    },
+    {
+      fallacy: 'Potential false dilemma',
+      severity: 'LOW',
+      explanation:
+        'The reasoning frames the choice too narrowly. It may overlook phased or mixed policy options that combine caution and action.',
+    },
+    {
+      fallacy: 'Potential appeal to fear',
+      severity: 'MEDIUM',
+      explanation:
+        'The argument emphasizes risk strongly but gives fewer concrete probability estimates, which can amplify urgency beyond evidence.',
+    },
+    {
+      fallacy: 'Potential causal oversimplification',
+      severity: 'LOW',
+      explanation:
+        'The argument suggests a direct cause-effect path while the evidence may involve multiple interacting factors.',
+    },
+    {
+      fallacy: 'Potential confirmation bias in evidence selection',
+      severity: 'LOW',
+      explanation:
+        'The claim leans on supportive facts more than contradictory findings. Counter-evidence should be addressed directly.',
+    },
+  ];
+
+  const selected = variants[score];
+  return `FALLACIES: ${selected.fallacy}\nSEVERITY: ${selected.severity}\nEXPLANATION: ${selected.explanation}`;
+}
+
 function mockTavilyResponse(query: string): TavilyResponse {
   const compactQuery = query.replace(/\s+/g, ' ').trim();
+  const baseTopic = normalizeTopicForMock(compactQuery);
+  const counterView = isCounterViewQuery(compactQuery);
+
+  const primaryResults: TavilySearchResult[] = [
+    {
+      title: `${baseTopic}: recent social context and scope`,
+      url: 'https://civic-insights.org/reports/social-context',
+      content:
+        `A neutral overview of ${baseTopic} outlining prevalence, stakeholders, and the institutional context where policy decisions are made.`,
+      score: 0.93,
+    },
+    {
+      title: `${baseTopic}: policy intervention outcomes`,
+      url: 'https://governance-review.edu/policy/outcomes',
+      content:
+        `Comparative policy evidence suggests targeted interventions can improve outcomes when accountability and review mechanisms are explicit.`,
+      score: 0.86,
+    },
+    {
+      title: `${baseTopic}: implementation and cost considerations`,
+      url: 'https://public-finance.net/implementation/brief',
+      content:
+        `Implementation quality, enforcement design, and monitoring costs materially affect whether policy goals are achieved over time.`,
+      score: 0.82,
+    },
+  ];
+
+  const counterResults: TavilySearchResult[] = [
+    {
+      title: `${baseTopic}: critique of one-size-fits-all policy`,
+      url: 'https://rights-observer.org/analysis/policy-critique',
+      content:
+        `Critical reviews warn that broad interventions may overreach when local context differs and safeguards are weakly defined.`,
+      score: 0.9,
+    },
+    {
+      title: `${baseTopic}: unintended effects and edge cases`,
+      url: 'https://policy-lab.edu/research/unintended-effects',
+      content:
+        `Edge-case failures are more common when rollout is rushed; phased deployment with audits reduces harm in contested domains.`,
+      score: 0.84,
+    },
+    {
+      title: `${baseTopic}: evidence quality and data gaps`,
+      url: 'https://methods-journal.net/review/evidence-gaps',
+      content:
+        `Several studies highlight data-quality limits and selection bias risks, recommending independent verification before scale-up.`,
+      score: 0.8,
+    },
+  ];
+
+  const results = counterView ? counterResults : primaryResults;
+
   return {
     query: compactQuery,
     answer: `Local fallback evidence generated for topic: ${compactQuery}`,
     response_time: 0,
-    results: [
-      {
-        title: `Context snapshot: ${compactQuery}`,
-        url: 'https://example.org/context',
-        content:
-          'This is a local fallback evidence item created because Tavily API credentials are missing. It provides neutral baseline context for debate flow testing.',
-        score: 0.92,
-      },
-      {
-        title: `Supporting considerations for ${compactQuery}`,
-        url: 'https://example.org/support',
-        content:
-          'Some arguments support intervention based on possible social impact, operational efficiency, and risk reduction when governance controls are explicit.',
-        score: 0.84,
-      },
-      {
-        title: `Counter-view considerations for ${compactQuery}`,
-        url: 'https://example.org/counter',
-        content:
-          'Some arguments caution against overreach, weak evidence quality, and unintended side effects. They recommend phased rollout and independent review.',
-        score: 0.81,
-      },
-    ],
+    results,
   };
 }
 
 function mockGroqResponse(prompt: string): string {
   const normalizedPrompt = prompt.toLowerCase();
+  const topic = extractTopicFromPrompt(prompt);
 
   if (normalizedPrompt.includes('fallacies:') && normalizedPrompt.includes('severity:')) {
-    return 'FALLACIES: Potential hasty generalization\nSEVERITY: LOW\nEXPLANATION: The argument may over-extend from limited examples and should cite broader evidence.';
+    return mockFallacyResponse(prompt);
   }
 
   if (normalizedPrompt.includes('prosecution_summary:') && normalizedPrompt.includes('verdict:')) {
@@ -59,29 +167,36 @@ function mockGroqResponse(prompt: string): string {
     ].join('\n');
   }
 
-  if (normalizedPrompt.includes('counterpoint 1:')) {
+  if (normalizedPrompt.includes("you are the devil's advocate") || normalizedPrompt.includes('devils advocate') || normalizedPrompt.includes('gap 1:')) {
     return [
-      'Counterpoint 1: The evidence is not complete and may miss context.',
-      'Counterpoint 2: Fast policy changes can create unexpected harm.',
-      'Counterpoint 3: A phased plan allows correction based on new data.',
-      'Closing: Caution with measurable checkpoints is the safer path.',
+      `Gap 1: In ${topic}, both sides treat their strongest assumptions as stable, but they are not tested against edge cases.`,
+      'Gap 2: Prosecution leans on urgency while defense leans on caution, yet neither side quantifies likely outcomes clearly.',
+      'Gap 3: Implementation quality, enforcement drift, and institutional capacity are under-specified in both arguments.',
+      'Question: What if the core assumption each side depends on fails during rollout in the first six months?',
     ].join(' ');
   }
 
-  if (normalizedPrompt.includes('gap 1:')) {
+  if (normalizedPrompt.includes('you are the defense') || normalizedPrompt.includes('counterpoint 1:')) {
     return [
-      'Gap 1: Core assumptions are stated but not fully tested.',
-      'Gap 2: Evidence quality differs across major claims.',
-      'Gap 3: Long-term outcomes are uncertain in both proposals.',
-      'Question: What if the strongest assumption from each side fails in practice?',
+      `Counterpoint 1: The prosecution frames ${topic} as needing immediate strong action, but the current evidence base is still uneven across regions and groups.`,
+      'Counterpoint 2: Rapid policy rollout can create collateral harms if enforcement standards are inconsistent or hard to audit.',
+      'Counterpoint 3: A phased model with pilots, independent review, and correction checkpoints is more likely to preserve fairness over time.',
+      'Closing: The stronger path is controlled implementation with measurable safeguards, not maximal intervention on day one.',
+    ].join(' ');
+  }
+
+  if (normalizedPrompt.includes('you are the prosecutor') || normalizedPrompt.includes('point 1:')) {
+    return [
+      `Point 1: The evidence on ${topic} indicates ongoing harm and institutional blind spots that are unlikely to self-correct without intervention.`,
+      'Point 2: Delay increases downstream social and operational costs, especially when early warning indicators are already visible in multiple studies.',
+      'Point 3: A structured intervention model with transparent oversight can reduce risk while preserving accountability and public trust.',
+      'Closing: Timely action is justified, provided safeguards are built into implementation from the start.',
     ].join(' ');
   }
 
   return [
-    'Point 1: Available evidence suggests the issue requires active response.',
-    'Point 2: Delay increases operational and social risk.',
-    'Point 3: Structured intervention with oversight improves outcomes.',
-    'Closing: Action with clear safeguards is justified.',
+    'The available evidence is mixed and should be handled with caution.',
+    'A balanced, testable, and phased approach is usually more reliable than absolute positions.',
   ].join(' ');
 }
 

@@ -15,8 +15,8 @@ const DEVILS_ADVOCATE_PROMPT = `You are the Devil's Advocate.
 Do not take sides. Use simple language.
 
 Rules:
-- Short lines only.
-- No complex vocabulary.
+- Connect each gap to something both sides already said.
+- Use concise but complete sentences.
 - List exactly 3 weak points.
 - Ask 1 practical "what if" question.
 
@@ -26,7 +26,7 @@ Gap 2:
 Gap 3:
 Question:
 
-Limit: 60 to 80 words total.`;
+Limit: 90 to 120 words total.`;
 
 export async function runDevilsAdvocateWorker(intervalMs = 20000) {
   log('😈', "Devil's Advocate Worker started");
@@ -78,12 +78,12 @@ async function processDevilsAdvocateSession(conn: any, session: DebateSession) {
 
     const systemPrompt = `${DEVILS_ADVOCATE_PROMPT}\n\n${prosecutionContext}${defenseContext}Generate your critique now.`;
     const critiqueRaw = await callLlamaLarge(systemPrompt);
-    const policyCheck = gateGeneratedArgument(JURY_ROLE.DEVILS_ADVOCATE, critiqueRaw, 80);
+    const policyCheck = gateGeneratedArgument(JURY_ROLE.DEVILS_ADVOCATE, critiqueRaw, 120);
     if (policyCheck.warnings.length > 0) {
       log('🛡️', `Devil's advocate output sanitized for session ${sessionId}: ${policyCheck.warnings.join(', ')}`);
     }
 
-    const critique = clampToWords(policyCheck.sanitizedText, 80);
+    const critique = clampToWords(policyCheck.sanitizedText, 120);
 
     // Write via reducer
     await conn.reducers.postArgument({

@@ -15,10 +15,10 @@ const PROSECUTION_PROMPT = `You are the Prosecutor in a debate.
 Use plain English only.
 
 Rules:
-- Short sentences.
-- No high-level or academic words.
-- Give exactly 3 points.
-- One simple closing line.
+- Keep arguments connected across points.
+- Explicitly reference at least one evidence item.
+- Give exactly 3 points with 1-2 sentences each.
+- Add one short closing line.
 
 Format:
 Point 1:
@@ -26,7 +26,7 @@ Point 2:
 Point 3:
 Closing:
 
-Limit: 70 to 90 words total.`;
+Limit: 110 to 140 words total.`;
 
 export async function runProsecutionWorker(intervalMs = 15000) {
   log('⚖️', 'Prosecution Worker started');
@@ -73,12 +73,12 @@ async function processProsecutionSession(conn: any, session: DebateSession) {
 
     const systemPrompt = `${PROSECUTION_PROMPT}\n\nEvidence available:\n${evidenceText}`;
     const prosecutionArgRaw = await callMixtral(systemPrompt);
-    const policyCheck = gateGeneratedArgument(JURY_ROLE.PROSECUTION, prosecutionArgRaw, 90);
+    const policyCheck = gateGeneratedArgument(JURY_ROLE.PROSECUTION, prosecutionArgRaw, 140);
     if (policyCheck.warnings.length > 0) {
       log('🛡️', `Prosecution output sanitized for session ${sessionId}: ${policyCheck.warnings.join(', ')}`);
     }
 
-    const prosecutionArg = clampToWords(policyCheck.sanitizedText, 90);
+    const prosecutionArg = clampToWords(policyCheck.sanitizedText, 140);
 
     // Write via reducer
     await conn.reducers.postArgument({

@@ -9,7 +9,7 @@
 import { MongoClient, Db } from 'mongodb';
 import { SESSION_PHASE } from '../constants.js';
 import { getConnection, DebateSession, Message, Evidence } from '../spacetime.js';
-import { callLlamaLarge, clampToWords } from '../utils/apis.js';
+import { callLlamaLarge } from '../utils/apis.js';
 import { gateSynthesisOutput } from '../utils/policy.js';
 import { log, logSuccess, logError, generateIdempotencyKey, writeAuditLog } from '../utils/logger.js';
 
@@ -121,10 +121,10 @@ ${evidenceSummary}`;
       log('🛡️', `Synthesis output sanitized for session ${sessionId}: ${policyCheck.warnings.join(', ')}`);
     }
 
-    const synthesis = clampToWords(policyCheck.sanitizedText, 130);
+    const synthesis = policyCheck.sanitizedText;
 
-    // Parse synthesis (simple extraction)
-    const verdict = synthesis.split('VERDICT:')[1]?.trim() || synthesis.substring(0, 500);
+    const verdictMatch = synthesis.match(/(?:^|\n)VERDICT:\s*(.+?)(?:\n|$)/i);
+    const verdict = verdictMatch?.[1]?.trim() || 'Unable to determine verdict from synthesis output.';
 
     // Write verdict via reducer
     await conn.reducers.finalizeVerdict({

@@ -23,13 +23,35 @@ export async function runFallacyWorker(intervalMs = 10000) {
   log('🔎', 'Fallacy Worker started');
 
   const processedMessages = new Set<string>();
+  const alertedMessages = new Set<string>();
+  let bootstrapped = false;
 
   while (true) {
     try {
       const conn = getConnection();
+
+      // Seed dedupe set from persisted alerts so restarts don't recreate duplicates.
+      const existingAlerts = conn.db.alert?.iter ? await conn.db.alert.iter() : [];
+      for (const alert of existingAlerts as Array<{ messageId?: bigint | string }>) {
+        if (alert.messageId === undefined || alert.messageId === null) {
+          continue;
+        }
+        alertedMessages.add(alert.messageId.toString());
+      }
       
       // Poll for new messages
       const allMessages = await conn.db.message.iter();
+
+      if (!bootstrapped) {
+        for (const message of allMessages as Message[]) {
+          processedMessages.add(message.id.toString());
+        }
+
+        bootstrapped = true;
+        log('🔎', `Bootstrap complete: tracking ${processedMessages.size} existing messages, waiting for new ones`);
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        continue;
+      }
       
       for (const message of allMessages) {
         const msg = message as Message;
@@ -37,6 +59,10 @@ export async function runFallacyWorker(intervalMs = 10000) {
         
         // Skip if already processed
         if (processedMessages.has(msgIdStr)) continue;
+        if (alertedMessages.has(msgIdStr)) {
+          processedMessages.add(msgIdStr);
+          continue;
+        }
         
         // Skip if message is not from a debate agent
         const canonicalRole = toCanonicalRole(msg.role);
@@ -48,7 +74,10 @@ export async function runFallacyWorker(intervalMs = 10000) {
         if (!isDebateRole) continue;
 
         processedMessages.add(msgIdStr);
-        await analyzeFallacy(conn, msg);
+        const alertRecorded = await analyzeFallacy(conn, msg);
+        if (alertRecorded) {
+          alertedMessages.add(msgIdStr);
+        }
       }
 
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
@@ -59,7 +88,7 @@ export async function runFallacyWorker(intervalMs = 10000) {
   }
 }
 
-async function analyzeFallacy(conn: any, message: Message) {
+async function analyzeFallacy(conn: any, message: Message): Promise<boolean> {
   try {
     log('🔎', `Analyzing message ${message.id} for fallacies`);
 
@@ -80,7 +109,7 @@ async function analyzeFallacy(conn: any, message: Message) {
     const severity = severityMatch?.[1]?.trim() || 'LOW';
     const explanation = explanationMatch?.[1]?.trim() || analysis;
 
-    if (fallacies !== 'None') {
+    if (!/^none$/i.test(fallacies)) {
       // Record alert
       await conn.reducers.recordFallacyAlert({
         sessionId: message.sessionId,
@@ -102,10 +131,13 @@ async function analyzeFallacy(conn: any, message: Message) {
         policyReason: policyCheck.reason,
         status: 'alert_recorded',
       });
+      return true;
     } else {
       logSuccess('🔎', `No fallacies detected in message ${message.id}`);
+      return false;
     }
   } catch (error) {
     logError('FALLACY', `Failed to analyze message: ${error}`);
+    return false;
   }
 }
